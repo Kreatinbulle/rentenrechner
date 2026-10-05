@@ -179,3 +179,38 @@ def zerlegung(a: E.Ergebnis, ref: E.Ergebnis, basis: int, real: bool, alter: int
     rows = [{"Komponente": k, "Δ": sa[k] - sr[k]} for k in sa]
     df = pd.DataFrame(rows)
     return df[df["Δ"].abs() >= 1].reset_index(drop=True)
+
+
+# ----------------------------------------------------------------------------
+def _alt(m: int) -> str:
+    return f"{m // 12}" if m % 12 == 0 else f"{m // 12} J. {m % 12} M."
+
+
+def auto_name(sz: Szenario, p: Person, ann: Annahmen) -> str:
+    """Sprechender Name aus den Einstellungen, z. B. „Rente mit 63 (Abschlag 14,4 %)“."""
+    rb = sz.rentenbeginn_alter_m
+    ew = min(sz.erwerbsende_alter_m, rb)
+    st = ann.start_datum()
+    birth_idx, start_idx = p.geburt.year * 12 + p.geburt.month - 1, st.year * 12 + st.month - 1
+    arbeitsm = max(0, birth_idx + ew + 1 - start_idx)
+    an = E.rentenanspruch(p.geburt.year, rb, p.wartezeit_jahre_35 + arbeitsm / 12, p.wartezeit_jahre_45 + arbeitsm / 12)
+    rag = C.regelaltersgrenze_monate(p.geburt.year)
+    if 0 < sz.teilrente_prozent < 100 and sz.vollrente_alter_m > rb:
+        base = f"Teilrente {sz.teilrente_prozent:.0f} % ab {_alt(rb)}, voll ab {_alt(sz.vollrente_alter_m)}"
+    elif rb - ew >= 6:
+        base = f"Aufhören mit {_alt(ew)}, Rente mit {_alt(rb)}"
+    else:
+        base = f"Rente mit {_alt(rb)}"
+    if sz.ausgleich_modus != "keine":
+        base += " + Ausgleichszahlung"
+    if sz.hinzuverdienst_monat > 0:
+        base += " + Nebenjob"
+    if not an.ok:
+        tag = "nicht möglich"
+    elif an.abschlag_monate:
+        tag = f"Abschlag {an.abschlag_monate * C.RENTENABSCHLAG_PRO_MONAT * 100:.1f} %".replace(".", ",")
+    elif an.zuschlag_monate:
+        tag = f"Zuschlag {an.zuschlag_monate * C.RENTENZUSCHLAG_PRO_MONAT * 100:.1f} %".replace(".", ",")
+    else:
+        tag = "regulär" if rb >= rag else "abschlagsfrei"
+    return f"{base} ({tag})"

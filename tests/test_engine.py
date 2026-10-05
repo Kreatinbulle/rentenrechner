@@ -174,3 +174,13 @@ def test_zerlegung_summe_gleich_differenz():
                 df = I.zerlegung(ergs[i], ergs[0], basis, real, 85)
                 diff = I._kum(ergs[i], basis, real, 85) - I._kum(ergs[0], basis, real, 85)
                 assert abs(df["Δ"].sum() - diff) < 5, (basis, real, i, df["Δ"].sum(), diff)
+
+
+def test_auto_name_folgt_den_einstellungen():
+    import insights as I
+    pr = standard_projekt(); pr.annahmen.start = "2026-10"
+    n63 = I.auto_name(Szenario(erwerbsende_alter_m=63 * 12, rentenbeginn_alter_m=63 * 12), pr.person, pr.annahmen)
+    n65 = I.auto_name(Szenario(erwerbsende_alter_m=65 * 12, rentenbeginn_alter_m=65 * 12), pr.person, pr.annahmen)
+    assert n63 == "Rente mit 63 (Abschlag 14,4 %)"
+    assert n65 == "Rente mit 65 (abschlagsfrei)"
+    assert "Aufhören mit 62" in I.auto_name(Szenario(erwerbsende_alter_m=62 * 12, rentenbeginn_alter_m=67 * 12), pr.person, pr.annahmen)

@@ -77,7 +77,15 @@ def _proj() -> Projekt:
     pd_["geburtsdatum"] = pd_["geburtsdatum"].isoformat()
     ad_ = dict(st_["ann"])
     ad_["start"] = f"{ad_['start'].year}-{ad_['start'].month:02d}"
-    return Projekt(Person.from_dict(pd_), Annahmen.from_dict(ad_), [Szenario.from_dict(s) for s in st_["szen"]])
+    p_, a_ = Person.from_dict(pd_), Annahmen.from_dict(ad_)
+    szs = []
+    for i, d in enumerate(st_["szen"]):
+        s = Szenario.from_dict(d)
+        if s.auto_name:
+            letter = chr(65 + i) if i < 26 else str(i + 1)
+            s.name = d["name"] = f"{letter}: {I.auto_name(s, p_, a_)}"
+        szs.append(s)
+    return Projekt(p_, a_, szs)
 
 
 @st.cache_data(show_spinner=False)
@@ -323,11 +331,14 @@ def page_verm():
 
 def _szenario_karte(sd: dict, idx: int, pr: Projekt):
     sid = sd["id"]
-    s = Szenario.from_dict(sd)
+    s = pr.szenarien[idx]
     e = rechne(pr.person, pr.annahmen, s)
     with st.container(border=True):
         h1, h2, h3, h4 = st.columns([5, 1, 1, 1])
-        sd["name"] = h1.text_input("Name", value=sd["name"], key=f"w_s{sid}_name", label_visibility="collapsed")
+        if sd.get("auto_name", True):
+            h1.markdown(f"##### {sd['name']}")
+        else:
+            sd["name"] = h1.text_input("Name", value=sd["name"], key=f"w_s{sid}_name", label_visibility="collapsed")
         if h2.button("⧉", key=f"dup{sid}", help="Duplizieren"):
             S()["szen"].append({**sd, "id": S()["next_id"], "name": sd["name"] + " (Kopie)"})
             S()["next_id"] += 1
@@ -346,6 +357,8 @@ def _szenario_karte(sd: dict, idx: int, pr: Projekt):
         for w in (e.warnungen if e.ok else []):
             st.warning(w)
         with st.expander("Bearbeiten"):
+            W(st.checkbox, "Name automatisch aus den Einstellungen erzeugen", sd, "auto_name", f"s{sid}",
+              help="Der Name passt sich an, wenn du Alter, Teilrente usw. änderst. Ausschalten, um einen eigenen Namen zu vergeben.")
             st.markdown("**Zeitpunkte**")
             c = st.columns(2)
             ALTER(c[0], "Letzter Arbeitstag mit Alter", sd, "erwerbsende_alter_m", f"s{sid}", 50, 75,
@@ -546,7 +559,7 @@ def live_controls():
         st.info("Noch kein Szenario angelegt.")
         return None, None
     ui["master"] = min(ui.get("master", 0), len(szs) - 1)
-    mi = W(st.selectbox, "Master-Szenario", ui, "master", "ui", list(range(len(szs))), format_func=lambda i: szs[i]["name"])
+    mi = W(st.selectbox, "Master-Szenario", ui, "master", "ui", list(range(len(szs))), format_func=lambda i: f"Szenario {chr(65 + i) if i < 26 else i + 1}")
     kpi_box = st.container()      # wird später mit den Kennzahlen gefüllt – steht oben, Regler darunter
     sd = szs[mi]
     sid = sd["id"]
@@ -564,9 +577,15 @@ def live_controls():
     k = f"w_live_{sid}_"
     init(k + "ew", clamp(int(sd["erwerbsende_alter_m"]), 600, 840))
     init(k + "rb", clamp(int(sd["rentenbeginn_alter_m"]), 720, 840))
-    sd["erwerbsende_alter_m"] = st.select_slider("Letzter Arbeitstag mit …", options=list(range(600, 841)), format_func=E.fmt_alter, key=k + "ew")
     sd["rentenbeginn_alter_m"] = st.select_slider("Rentenbeginn mit …", options=list(range(720, 841)), format_func=E.fmt_alter, key=k + "rb",
                                                     help="Jeder Monat früher kostet 0,3 % Rente (max. 14,4 %), jeder Monat später nach der Regelaltersgrenze bringt 0,5 % Zuschlag.")
+    init(k + "koppel", sd["erwerbsende_alter_m"] >= sd["rentenbeginn_alter_m"])
+    koppel = st.checkbox("Arbeitsende = Rentenbeginn", key=k + "koppel",
+                         help="An: Du arbeitest bis zum Rentenbeginn. Aus: Du hörst früher auf und überbrückst (z. B. mit Ersparnissen).")
+    if koppel:
+        ss[k + "ew"] = clamp(sd["rentenbeginn_alter_m"], 600, 840)
+    sd["erwerbsende_alter_m"] = st.select_slider("Letzter Arbeitstag mit …", options=list(range(600, 841)), format_func=E.fmt_alter,
+                                                  key=k + "ew", disabled=koppel)
     init(k + "tr", clamp(int(round(sd["teilrente_prozent"] / 10) * 10), 10, 100))
     sd["teilrente_prozent"] = float(st.select_slider("Teilrente (%)", options=list(range(10, 101, 10)), key=k + "tr",
                                                        help="100 = volle Rente. Bei weniger startet die Restrente ggf. später (im Szenario-Editor festlegbar)."))
@@ -605,6 +624,7 @@ def live_kennzahlen(mi: int | None, ergs_all, pr: Projekt, basis: int, real: boo
     ui = S()["ui"]
     sd = S()["szen"][mi]
     e = ergs_all[mi]
+    st.markdown(f"**{sd['name']}**")
     if not e.ok:
         st.error(" ".join(e.fehler))
         return

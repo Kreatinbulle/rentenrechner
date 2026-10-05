@@ -75,6 +75,7 @@ class Annahmen:
 @dataclass
 class Szenario:
     name: str = "Szenario"
+    auto_name: bool = True                    # Name automatisch aus den Einstellungen erzeugen
     erwerbsende_alter_m: int = 63 * 12        # Alter (Monate), mit dem die Haupttätigkeit endet
     rentenbeginn_alter_m: int = 63 * 12       # Alter (Monate) bei Rentenbeginn
     teilrente_prozent: float = 100.0          # Anteil der Rente, der zunächst bezogen wird
