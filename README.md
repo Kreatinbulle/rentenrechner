@@ -13,6 +13,8 @@ streamlit run app.py        # oder: streamlit run gui.py
 pytest -q tests
 ```
 
+Windows: Doppelklick auf `start.bat` (richtet beim ersten Mal alles ein). macOS/Linux: `./start.sh`.
+
 ## Architektur
 | Datei | Aufgabe |
 |---|---|
