@@ -522,38 +522,170 @@ def chart_tornado(df: pd.DataFrame, titel: str):
 # ============================================================================
 # Ergebnis
 # ============================================================================
+LIVE_CSS = """
+<style>
+.block-container{max-width:1500px}
+div[data-testid="stHorizontalBlock"]:has(> div[data-testid="stColumn"] .livepanel){align-items:flex-start}
+div[data-testid="stColumn"]:has(.livepanel){position:sticky;top:3.2rem;max-height:calc(100vh - 3.8rem);overflow-y:auto;
+    padding:.2rem .6rem .6rem .2rem}
+</style>
+"""
+
+
+def _snap_ann(ui: dict) -> dict:
+    return ui.setdefault("snap_ann", {"rentensteigerung": S()["ann"]["rentensteigerung"], "inflation": S()["ann"]["inflation"]})
+
+
+def live_controls():
+    """Live-Regler für das Master-Szenario (schreiben direkt in den Store)."""
+    ui, szs, a = S()["ui"], S()["szen"], S()["ann"]
+    st.markdown('<div class="livepanel"></div>', unsafe_allow_html=True)
+    st.subheader("🎛 Live-Spielwiese")
+    st.caption("Ändere Werte des Master-Szenarios – Kennzahlen und alle Diagramme rechts reagieren sofort.")
+    if not szs:
+        st.info("Noch kein Szenario angelegt.")
+        return None, None
+    ui["master"] = min(ui.get("master", 0), len(szs) - 1)
+    mi = W(st.selectbox, "Master-Szenario", ui, "master", "ui", list(range(len(szs))), format_func=lambda i: szs[i]["name"])
+    kpi_box = st.container()      # wird später mit den Kennzahlen gefüllt – steht oben, Regler darunter
+    sd = szs[mi]
+    sid = sd["id"]
+    ui.setdefault("snap", {}).setdefault(sid, dict(sd))
+    _snap_ann(ui)
+    ss = st.session_state
+
+    def init(key, val):
+        if key not in ss:
+            ss[key] = val
+
+    def clamp(v, lo, hi):
+        return max(lo, min(hi, v))
+
+    k = f"w_live_{sid}_"
+    init(k + "ew", clamp(int(sd["erwerbsende_alter_m"]), 600, 840))
+    init(k + "rb", clamp(int(sd["rentenbeginn_alter_m"]), 720, 840))
+    sd["erwerbsende_alter_m"] = st.select_slider("Letzter Arbeitstag mit …", options=list(range(600, 841)), format_func=E.fmt_alter, key=k + "ew")
+    sd["rentenbeginn_alter_m"] = st.select_slider("Rentenbeginn mit …", options=list(range(720, 841)), format_func=E.fmt_alter, key=k + "rb",
+                                                    help="Jeder Monat früher kostet 0,3 % Rente (max. 14,4 %), jeder Monat später nach der Regelaltersgrenze bringt 0,5 % Zuschlag.")
+    init(k + "tr", clamp(int(round(sd["teilrente_prozent"] / 10) * 10), 10, 100))
+    sd["teilrente_prozent"] = float(st.select_slider("Teilrente (%)", options=list(range(10, 101, 10)), key=k + "tr",
+                                                       help="100 = volle Rente. Bei weniger startet die Restrente ggf. später (im Szenario-Editor festlegbar)."))
+    init(k + "hz", int(clamp(round(sd["hinzuverdienst_monat"] / 50) * 50, 0, 2000)))
+    sd["hinzuverdienst_monat"] = float(st.slider("Nebenjob brutto/Monat (€)", 0, 2000, step=50, key=k + "hz"))
+    modi = ["keine", "voll"] + (["betrag"] if sd["ausgleich_modus"] == "betrag" else [])
+    init(k + "au", sd["ausgleich_modus"])
+    sd["ausgleich_modus"] = st.radio("Abschlag ausgleichen (§ 187a)", modi, horizontal=True, key=k + "au",
+                                     format_func={"keine": "Nein", "voll": "Voll", "betrag": "Fester Betrag"}.get)
+    init(k + "wn", int(clamp(round(sd["wunsch_netto_monat"] / 100) * 100, 0, 6000)))
+    sd["wunsch_netto_monat"] = float(st.slider("Wunsch-Netto aus Ersparnissen (€/Monat)", 0, 6000, step=100, key=k + "wn",
+                                               help="0 = keine Entnahme aus dem Depot."))
+    st.markdown("**Annahmen**")
+    init("w_live_rs", round(a["rentensteigerung"] * 100, 1))
+    init("w_live_inf", round(a["inflation"] * 100, 1))
+    a["rentensteigerung"] = st.slider("Rentenanpassung p.a. (%)", 0.0, 5.0, step=0.1, key="w_live_rs") / 100
+    a["inflation"] = st.slider("Inflation p.a. (%)", 0.0, 6.0, step=0.1, key="w_live_inf") / 100
+    b1, b2 = st.columns(2)
+    if b1.button("↺ Zurücksetzen", key="live_reset", width="stretch", help="Zurück auf die Werte, mit denen du das Ergebnis geöffnet hast."):
+        sd.update(ui["snap"][sid])
+        a.update(ui["snap_ann"])
+        for kk in [kk for kk in ss if str(kk).startswith("w_live_") or str(kk).startswith(f"w_s{sid}_")]:
+            del ss[kk]
+        st.rerun()
+    if b2.button("➕ Als Szenario", key="live_save", width="stretch", help="Aktuelle Einstellung als neues Szenario festhalten."):
+        szs.append({**sd, "id": S()["next_id"], "name": sd["name"] + " (Variante)"})
+        S()["next_id"] += 1
+        st.rerun()
+    return mi, kpi_box
+
+
+def live_kennzahlen(mi: int | None, ergs_all, pr: Projekt, basis: int, real: bool, ref_name: str, alter: int):
+    """Kennzahlen + Mini-Chart des Master-Szenarios im Vergleich zum Zustand beim Öffnen (Δ)."""
+    if mi is None:
+        return
+    ui = S()["ui"]
+    sd = S()["szen"][mi]
+    e = ergs_all[mi]
+    if not e.ok:
+        st.error(" ".join(e.fehler))
+        return
+    ann0 = Annahmen.from_dict({**asdict(pr.annahmen), **ui["snap_ann"]})
+    s0 = Szenario.from_dict(ui["snap"][sd["id"]])
+    e0 = rechne(pr.person, ann0, s0)
+    ref_s = next((x for x in pr.szenarien if x.name == ref_name), None)
+    suf = "_real" if real else ""
+    k, k0 = e.kennzahlen, (e0.kennzahlen if e0.ok else None)
+    st.metric("Netto-Rente / Monat", eur(k["rente_netto_start" + suf]),
+              delta=eur(k["rente_netto_start" + suf] - k0["rente_netto_start" + suf]) if k0 else None, help="Ø im 1. vollen Rentenjahr. Δ = Änderung seit Öffnen des Ergebnisses.")
+    c1, c2 = st.columns(2)
+    c1.metric("Abschlag", f"{k['abschlag_prozent']:.1f} %", delta=f"{k['abschlag_prozent'] - k0['abschlag_prozent']:+.1f} %" if k0 else None, delta_color="inverse")
+    km = I._kum(e, basis, real, alter)
+    c2.metric(f"Summe bis {alter}", eur(km), delta=eur(km - I._kum(e0, basis, real, alter)) if k0 else None)
+    if ref_s is not None and ref_s.name != sd["name"]:
+        er, er0 = rechne(pr.person, pr.annahmen, ref_s), rechne(pr.person, ann0, ref_s)
+        if er.ok:
+            vor = km - I._kum(er, basis, real, alter)
+            vor0 = (I._kum(e0, basis, real, alter) - I._kum(er0, basis, real, alter)) if (k0 and er0.ok) else None
+            st.metric(f"Vorsprung ggü. „{ref_name}“", eur(vor), delta=eur(vor - vor0) if vor0 is not None else None)
+            be = E.break_even(er, e, basis, real)
+            st.caption("⚖️ " + be["text"])
+            fig = go.Figure()
+            s, r_ = E.serie_kumuliert(e, basis, real), E.serie_kumuliert(er, basis, real)
+            n = min(len(s), len(r_))
+            if k0 and er0.ok:
+                s0_, r0_ = E.serie_kumuliert(e0, basis, real), E.serie_kumuliert(er0, basis, real)
+                n0 = min(len(s0_), len(r0_))
+                fig.add_trace(go.Scatter(x=s0_.index[:n0], y=s0_.values[:n0] - r0_.values[:n0], name="vorher",
+                                         line=dict(color="#999", dash="dot", width=2)))
+            fig.add_trace(go.Scatter(x=s.index[:n], y=s.values[:n] - r_.values[:n], name="jetzt", line=dict(color="#0072B2", width=3)))
+            fig.add_hline(y=0, line_color="#888", line_width=1)
+            fig.update_layout(height=230, margin=dict(l=0, r=0, t=28, b=0), title=dict(text="Vorsprung über die Zeit (€)", font=dict(size=13)),
+                              legend=dict(orientation="h", y=-0.25), yaxis_tickformat=",.0f", hovermode="x unified")
+            st.plotly_chart(fig, width="stretch")
+
+
 def page_ergebnis():
     ui = S()["ui"]
-    pr = _proj()
+    st.markdown(LIVE_CSS, unsafe_allow_html=True)
     st.header("7 · Ergebnis")
+    col_l, col_r = st.columns([1, 2.7], gap="large")
+    with col_l:
+        mi, kpi_box = live_controls()          # Phase 1: Regler (ändern den Store)
+    pr = _proj()
     ergs_all = [rechne(pr.person, pr.annahmen, s) for s in pr.szenarien]
-    for e in ergs_all:
-        if not e.ok:
-            st.error(f"**{e.szenario.name}:** " + " ".join(e.fehler) + " – bitte unter „5 · Szenarien“ anpassen.")
+    with col_r:
+        for e in ergs_all:
+            if not e.ok:
+                st.error(f"**{e.szenario.name}:** " + " ".join(e.fehler) + " – bitte Regler links oder „5 · Szenarien“ anpassen.")
     ergs = [e for e in ergs_all if e.ok]
     if len(ergs) < 1:
-        st.info("Kein gültiges Szenario vorhanden.")
+        with col_r:
+            st.info("Kein gültiges Szenario vorhanden.")
         return
-    with st.container(border=True):
-        c = st.columns([1.2, 2.2, 1.2, 1.2])
-        W(c[0].radio, "Werte in …", ui, "real", "ui", ["Nominal", "Real"], horizontal=True,
-          help="Nominal = Euro-Beträge der jeweiligen Zukunftsjahre. Real = in heutiger Kaufkraft (inflationsbereinigt) – für Vergleiche über Jahrzehnte aussagekräftiger.")
-        W(c[1].radio, "Was vergleichen?", ui, "basis", "ui", [1, 2, 3], format_func=BASIS_LABEL.get,
-          help="1: Nur Rentenzahlungen (abzgl. Ausgleichszahlung). 2: zusätzlich Gehalt in Mehrarbeitsjahren, Nebenjob, Entnahmen. 3: zusätzlich Wertveränderung des Depots.")
-        names = [e.szenario.name for e in ergs]
-        ui["ref"] = min(ui["ref"], len(names) - 1)
-        W(c[2].selectbox, "Referenz", ui, "ref", "ui", list(range(len(names))), format_func=lambda i: names[i],
-          help="Gegen dieses Szenario wird der Break-even berechnet (meist die früheste Rente).")
-        W(c[3].slider, "Betrachtungsalter", ui, "kum_alter", "ui", 70, 95,
-          help="Bis zu welchem Lebensjahr summieren wir? (Durchschnittliche Lebenserwartung mit 65: ca. 20 weitere Jahre.)")
+    with col_r:
+        with st.container(border=True):
+            c = st.columns([1.2, 2.2, 1.2, 1.2])
+            W(c[0].radio, "Werte in …", ui, "real", "ui", ["Nominal", "Real"], horizontal=True,
+              help="Nominal = Euro-Beträge der jeweiligen Zukunftsjahre. Real = in heutiger Kaufkraft (inflationsbereinigt) – für Vergleiche über Jahrzehnte aussagekräftiger.")
+            W(c[1].radio, "Was vergleichen?", ui, "basis", "ui", [1, 2, 3], format_func=BASIS_LABEL.get,
+              help="1: Nur Rentenzahlungen (abzgl. Ausgleichszahlung). 2: zusätzlich Gehalt in Mehrarbeitsjahren, Nebenjob, Entnahmen. 3: zusätzlich Wertveränderung des Depots.")
+            names = [e.szenario.name for e in ergs]
+            ui["ref"] = min(ui["ref"], len(names) - 1)
+            W(c[2].selectbox, "Referenz", ui, "ref", "ui", list(range(len(names))), format_func=lambda i: names[i],
+              help="Gegen dieses Szenario wird der Break-even berechnet (meist die früheste Rente).")
+            W(c[3].slider, "Betrachtungsalter", ui, "kum_alter", "ui", 70, 95,
+              help="Bis zu welchem Lebensjahr summieren wir? (Durchschnittliche Lebenserwartung mit 65: ca. 20 weitere Jahre.)")
     real, basis, ref, alter = ui["real"] == "Real", ui["basis"], ui["ref"], ui["kum_alter"]
-    if basis != 1:
-        st.caption("ℹ️ Bei dieser Vergleichsbasis fließt auch Gehalt aus zusätzlichen Arbeitsjahren ein – ein späterer Rentenbeginn wirkt daher oft sofort vorteilhaft.")
-    for e in ergs:
-        for w in e.warnungen:
-            st.warning(f"**{e.szenario.name}:** {w}")
+    if kpi_box is not None:
+        with kpi_box:
+            live_kennzahlen(mi, ergs_all, pr, basis, real, names[ref], alter)   # Phase 2: Wirkung der Regler
+    with col_r:
+        if basis != 1:
+            st.caption("ℹ️ Bei dieser Vergleichsbasis fließt auch Gehalt aus zusätzlichen Arbeitsjahren ein – ein späterer Rentenbeginn wirkt daher oft sofort vorteilhaft.")
+        for e in ergs:
+            for w in e.warnungen:
+                st.warning(f"**{e.szenario.name}:** {w}")
+        t1, t2, t3, tw, t4, t5, t6 = st.tabs(["🏁 Überblick", "📈 Verlauf", "⚖️ Break-even", "🧮 Woher der Unterschied?", "🎚 Einflussfaktoren", "🔍 Rechenweg", "📚 Zahlen & Methodik"])
 
-    t1, t2, t3, tw, t4, t5, t6 = st.tabs(["🏁 Überblick", "📈 Verlauf", "⚖️ Break-even", "🧮 Woher der Unterschied?", "🎚 Einflussfaktoren", "🔍 Rechenweg", "📚 Zahlen & Methodik"])
 
     with t1:
         st.markdown('<div class="fazit">' + re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", "<br>".join(I.fazit(ergs, basis, real, alter))) + "</div>", unsafe_allow_html=True)
@@ -586,12 +718,13 @@ def page_ergebnis():
             WHY("Depotwert über die Zeit. Fällt die Linie, wird Kapital zur Überbrückung verbraucht.")
 
     with t3:
-        st.plotly_chart(chart_kumuliert(ergs, basis, real, ref), width="stretch")
-        WHY("<b>So liest du das Diagramm:</b> Jede Linie summiert alles, was du bis zu diesem Alter netto erhalten hast. "
-            "Wo eine Linie die der Referenz überholt (◆), hat sich der Verzicht auf frühe Rentenjahre amortisiert – <b>Break-even</b>. "
-            "Wer älter wird, profitiert von der höheren Rente.")
         st.plotly_chart(chart_differenz(ergs, basis, real, ref), width="stretch")
-        WHY("Dieselbe Information als Differenz: Unter der Null-Linie liegt das Szenario hinter der Referenz, darüber davor.")
+        WHY("<b>So liest du das Diagramm:</b> Es zeigt, wie viel mehr (oder weniger) Netto ein Szenario <b>im Vergleich zur Referenz</b> bis zu diesem Alter insgesamt erhalten hat. "
+            "Unter der Null-Linie liegt es hinter der Referenz, darüber davor. Wo die Linie die Null kreuzt, ist der <b>Break-even</b>: "
+            "Der Verzicht auf frühere Rentenjahre hat sich amortisiert.")
+        with st.expander("Gesamtverlauf aller Szenarien (kumuliert)"):
+            st.plotly_chart(chart_kumuliert(ergs, basis, real, ref), width="stretch")
+            WHY("Jede Linie summiert alles, was bis zu diesem Alter netto geflossen ist. Die Linien liegen eng beieinander – die Unterschiede sieht man in der Differenz-Grafik darüber deutlich besser.")
         rows = []
         for e in ergs:
             if e is ergs[ref]:
