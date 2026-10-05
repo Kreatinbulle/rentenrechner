@@ -237,6 +237,23 @@ def page_du():
         W(c[1].number_input, "Abziehbare Vorsorge p.a.", p, "partner_vorsorge_jahr", "p", min_value=0.0, step=500.0,
           help="Kranken-/Pflegeversicherungsbeiträge des Partners.")
         PCT(c[2], "Einkommenssteigerung p.a. (%)", p, "partner_wachstum", "p")
+    if p["steuerklasse"] in C.SPLITTING_KLASSEN:
+        with st.expander("🧮 Partner-Einkünfte aus dem Bruttobetrag berechnen (Hilfe)"):
+            st.caption("Das Finanzamt rechnet mit *steuerpflichtigen Einkünften*, nicht mit dem Brutto. Gib hier das Brutto deines Partners ein – "
+                       "wir berechnen Einkünfte und abziehbare Kranken-/Pflegebeiträge und tragen sie oben ein.")
+            c = st.columns(3)
+            art = c[0].radio("Einkommensart", ["gehalt", "rente"], format_func={"gehalt": "Gehalt", "rente": "Rente"}.get, key="w_pt_art", horizontal=True)
+            brutto = c[1].number_input("Brutto pro Jahr (€)", min_value=0.0, step=1000.0, value=30_000.0, key="w_pt_brutto")
+            rb_j = c[2].number_input("Rentenbeginn (Jahr)", min_value=1990, max_value=2060, value=2020, step=1, key="w_pt_rb", disabled=art != "rente")
+            pr0 = _proj()
+            res = I.partner_aus_brutto(art, brutto, pr0.person, pr0.annahmen, int(rb_j))
+            st.markdown(f"→ **Einkünfte {eur(res['einkuenfte'])}**, **Vorsorge {eur(res['vorsorge'])}**, Wachstum {res['wachstum']:.1%}")
+            st.caption(res["text"])
+            if st.button("In die Felder oben übernehmen", key="pt_apply"):
+                p["partner_einkuenfte_jahr"], p["partner_vorsorge_jahr"], p["partner_wachstum"] = res["einkuenfte"], res["vorsorge"], res["wachstum"]
+                for k in ("partner_einkuenfte_jahr", "partner_vorsorge_jahr", "partner_wachstum"):
+                    st.session_state.pop(f"w_p_{k}", None)
+                st.rerun()
     with st.expander("Weitere Angaben (optional)"):
         W(st.selectbox, "Kirchensteuer", p, "kirchensteuer", "p", [0.0, 0.08, 0.09], format_func=lambda x: "keine" if x == 0 else f"{x:.0%}")
 
@@ -373,9 +390,18 @@ def page_vers():
           help="Normalfall: automatisch.")
         W(st.checkbox, "In einer Erwerbslücke über den Partner familienversichert", p, "luecken_kv_familienversichert", "p",
           help="Wenn du zwischen Erwerbsende und Rentenbeginn nichts verdienst, fallen sonst freiwillige KV-Beiträge an (min. ca. 18 % auf 1.318 €).")
+    st.markdown("##### Betriebsrente / Versorgungsbezüge")
+    c1, c2 = st.columns(2)
+    W(c1.number_input, "Betriebsrente brutto pro Monat bei Rentenbeginn (€)", p, "betriebsrente_monat", "p", min_value=0.0, step=25.0,
+      help="Direktversicherung, Pensionskasse, Direktzusage … Start zeitgleich mit der gesetzlichen Rente.")
+    PCT(c2, "Jährliche Anpassung der Betriebsrente (%)", p, "betriebsrente_wachstum", "p")
+    if p["betriebsrente_monat"] > 0:
+        WHY("<b>Achtung, oft unterschätzt:</b> Betriebsrenten sind <b>voll steuerpflichtig</b> und in der gesetzlichen Krankenversicherung der Rentner "
+            "<b>voll beitragspflichtig</b> (14,6 % + Zusatzbeitrag + Pflege – ohne Zuschuss der Rentenversicherung; Freibetrag nur ca. 198 €/Monat). "
+            "Von 100 € Betriebsrente bleiben deshalb oft nur etwa 60–70 € netto.")
     st.markdown("##### Weitere steuerpflichtige Einkünfte")
-    W(st.number_input, "Sonstige Einkünfte pro Jahr (z. B. Mieten, Betriebsrente)", p, "sonstige_einkuenfte_jahr", "p",
-      min_value=0.0, step=500.0, help="Voll steuerpflichtig, wachsen mit der Inflation. Erhöhen die Steuerlast auf deine Rente (Progression).")
+    W(st.number_input, "Sonstige Einkünfte pro Jahr (z. B. Mieten, Zinsen)", p, "sonstige_einkuenfte_jahr", "p",
+      min_value=0.0, step=500.0, help="Voll steuerpflichtig, wachsen mit der Inflation. In der KVdR nicht beitragspflichtig, bei freiwilliger Versicherung schon.")
     WHY("<b>Einfluss:</b> Zusätzliche Einkünfte werden auf deine Rente „obendrauf“ besteuert – dadurch rutscht auch die Rente in einen höheren Steuersatz.")
 
 
@@ -589,6 +615,22 @@ def chart_wasserfall(df: pd.DataFrame, name: str, ref_name: str):
     return fig
 
 
+def chart_brutto_netto(bn: dict, titel: str):
+    teile = [("Bruttorente (gesetzlich)", bn["brutto"], "relative")]
+    if bn["betriebsrente"] > 0:
+        teile.append(("Betriebsrente brutto", bn["betriebsrente"], "relative"))
+    teile += [("Krankenversicherung", -bn["kv"], "relative"), ("Pflegeversicherung", -bn["pv"], "relative"),
+              ("Steuern (ESt, Soli, KiSt)", -bn["steuer"], "relative"), ("Netto", 0, "total")]
+    fig = go.Figure(go.Waterfall(
+        measure=[t[2] for t in teile], x=[t[0] for t in teile], y=[t[1] for t in teile],
+        text=[f"{t[1]:+,.0f} €".replace(",", ".") if t[2] != "total" else f"{bn['netto']:,.0f} €".replace(",", ".") for t in teile],
+        textposition="outside", connector=dict(line=dict(color="#999", width=1)),
+        increasing=dict(marker=dict(color="#009E73")), decreasing=dict(marker=dict(color="#D55E00")), totals=dict(marker=dict(color="#0072B2")),
+        hovertemplate="%{y:,.0f} €<extra></extra>"))
+    fig.update_layout(title=titel, height=380, margin=dict(l=10, r=10, t=50, b=10), yaxis_title="€ pro Monat", yaxis_tickformat=",.0f", showlegend=False)
+    return fig
+
+
 def chart_tornado(df: pd.DataFrame, titel: str):
     fig = go.Figure()
     labels = [f"{r.Faktor}<br><sub>jetzt {r.aktuell} · blau {r.niedrig} · orange {r.hoch}</sub>" for r in df.itertuples()]
@@ -789,6 +831,23 @@ def page_ergebnis():
                 st.metric("Netto-Rente / Monat", eur(k["rente_netto_start_real" if real else "rente_netto_start"]),
                           help="Durchschnitt im ersten vollen Rentenjahr, nach KV/PV und Steuer.")
                 st.metric(f"Summe bis {alter}", eur(I._kum(e, basis, real, alter)))
+        st.markdown("#### Was bleibt netto übrig?")
+        nb = st.selectbox("Szenario", range(len(ergs)), format_func=lambda i: ergs[i].szenario.name, key="w_bn_sel")
+        bn = I.brutto_netto(ergs[nb], real)
+        if bn:
+            c1, c2 = st.columns([2, 1])
+            c1.plotly_chart(chart_brutto_netto(bn, f"Von der Rente zum Netto – Monatsdurchschnitt {bn['jahr']}" + (" (heutige Kaufkraft)" if real else "")), width="stretch")
+            gesamt_brutto = bn["brutto"] + bn["betriebsrente"]
+            c2.metric("Netto pro Monat", eur(bn["netto"]))
+            c2.metric("Von 100 € Brutto bleiben", f"{100 * bn['netto'] / gesamt_brutto:.0f} €" if gesamt_brutto else "–")
+            c2.metric("Abgaben gesamt", eur(bn["kv"] + bn["pv"] + bn["steuer"]), help="Kranken- und Pflegeversicherung plus Einkommensteuer inkl. Soli/Kirchensteuer.")
+            if pr.person.verheiratet:
+                st.caption("ℹ️ **Zusammenveranlagung:** Die Steuer ist die *Mehrbelastung des Haushalts* durch deine Einkünfte – berechnet mit dem Splittingtarif "
+                           "(Haushaltssteuer minus Steuer des Partners allein). Das ist die richtige Größe, um Szenarien zu vergleichen. "
+                           f"Das Finanzamt teilt die Gesamtsteuer in Bescheiden anteilig auf (§ 270 AO); dein Netto läge dann um ca. {eur(bn['steuer_anteilig_diff'])} pro Monat "
+                           "höher bzw. niedriger. Die Haushaltssumme ist in beiden Fällen gleich.")
+            else:
+                st.caption("ℹ️ Einzelveranlagung (Grundtarif). Steuer = Einkommensteuer + Soli + ggf. Kirchensteuer auf deine steuerpflichtigen Einkünfte nach Abzug von Rentenfreibetrag, Pauschbeträgen und Kranken-/Pflegebeiträgen.")
         lt = I.fuehrung_tabelle(ergs, basis, real)
         if len(lt):
             st.markdown("**Wer liegt bei welchem Alter vorn?**")
@@ -911,6 +970,11 @@ METHODIK = """
 * **Steuer:** Einkommensteuer-Veranlagung des Haushalts (Grund-/Splittingtarif 2026, mit Indexierung fortgeschrieben); Steuer der Person per
   Inkrementalmethode (Haushalt − Partner allein). Steuerklassen beeinflussen nur den Lohnsteuerabzug.
 * **Ausgleichszahlung (§ 187a):** Preis je EP = Durchschnittsentgelt × Beitragssatz (Näherung). Verbindlich ist die DRV-Auskunft.
+* **Zusammenveranlagung:** Steuer der Person = Steuer des Haushalts (Splittingtarif) − Steuer des Partners allein (Haushalts-Mehrbelastung). Das entspricht
+  dem Effekt auf das Haushalts-Netto; die anteilige Aufteilung nach § 270 AO wird zum Vergleich angezeigt. Partner-Einkünfte werden nicht aus Brutto berechnet,
+  sondern als steuerpflichtige Einkünfte eingegeben (Rechenhilfe im Schritt „Du“). Kinderfreibeträge/Kindergeld sind nicht berücksichtigt.
+* **Betriebsrente:** voll steuerpflichtig; in der KVdR voll beitragspflichtig (14,6 % + Zusatzbeitrag + PV, ohne DRV-Anteil; Freibetrag/Freigrenze ca. 198 €/Monat).
+  Versorgungsfreibetrag (Direktzusage) nicht berücksichtigt.
 * **KV/PV:** KVdR: Rentner trägt 7,3 % + ½ Zusatzbeitrag, PV voll. Freiwillig: Beitrag auf Rente + sonstige Einkünfte, DRV-Zuschuss auf die Rente.
   Depot-Kapitalerträge werden nicht beitragspflichtig modelliert.
 * **Hinzuverdienst:** Minijob abgabenfrei; darüber normale AN-Abzüge; EP-Zuschläge (ZF 1,0 vereinfacht) ab 1. Juli des Folgejahres.

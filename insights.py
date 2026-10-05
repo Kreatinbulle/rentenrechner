@@ -216,6 +216,7 @@ def zerlegung(a: E.Ergebnis, ref: E.Ergebnis, basis: int, real: bool, alter: int
             "Steuer auf die Rente": -sm("steuer_rente"),
             "Ausgleichszahlung (§ 187a)": -sm("ausgleich_zahlung"),
             "Steuerersparnis Ausgleichszahlung": sm("ausgleich_steuerersparnis") if basis == 1 else 0.0,
+            "Betriebsrente (netto)": sm("betr_netto"),
         }
         if basis >= 2:
             out.update({
@@ -269,3 +270,59 @@ def auto_name(sz: Szenario, p: Person, ann: Annahmen) -> str:
     else:
         tag = "regulär" if rb >= rag else "abschlagsfrei"
     return f"{base} ({tag})"
+
+
+# ----------------------------------------------------------------------------
+def brutto_netto(e: E.Ergebnis, real: bool = False) -> dict | None:
+    """Von der Bruttorente zum Netto – Monatsdurchschnitt im ersten vollen Rentenjahr."""
+    if not e.ok:
+        return None
+    k = e.kennzahlen
+    rb_idx = None
+    m = e.monat
+    first = m[m["rente_brutto"] > 0]
+    if first.empty:
+        return None
+    jr = int(first["jahr"].iloc[0])
+    jr = jr if int(first["monat"].iloc[0]) == 1 else jr + 1
+    sel = m[m["jahr"] == jr]
+    if sel.empty:
+        sel = first.iloc[:12]
+    d = sel["deflator"] if real else 1.0
+    mean = lambda c: float((sel[c] / d).mean())  # noqa: E731
+    out = {
+        "jahr": jr, "brutto": mean("rente_brutto"), "betriebsrente": mean("betr_brutto"),
+        "kv": mean("rente_kv") + mean("betr_kv"), "pv": mean("rente_pv") + mean("betr_pv"),
+        "steuer": mean("steuer_rente") + mean("steuer_betr"), "netto": mean("renten_netto"),
+    }
+    jj = e.jahr[e.jahr["jahr"] == jr]
+    out["steuer_anteilig_diff"] = float((jj["steuer_person"] - jj["steuer_anteilig"]).iloc[0] / 12 / (m["deflator"][m["jahr"] == jr].mean() if real else 1)) if len(jj) else 0.0
+    return out
+
+
+def partner_aus_brutto(art: str, brutto: float, p: Person, ann: Annahmen, rentenbeginn_jahr: int = 2020) -> dict:
+    """Schätzt Einkünfte und abziehbare Vorsorge des Partners (Jahr = Simulationsstart) aus dem Bruttobetrag.
+
+    art: 'gehalt' | 'rente'. Rückgabe: einkuenfte, vorsorge, wachstum, text.
+    """
+    jahr = ann.start_datum().year
+    pv = E.pv_saetze(p, jahr)
+    z = ann.zusatzbeitrag
+    if art == "gehalt":
+        rv = min(brutto, C.BBG_RV_JAHR) * C.RV_ANTEIL_AN
+        kv = min(brutto, C.BBG_KV_JAHR) * (C.KV_ALLGEMEIN / 2 + z / 2)
+        pvb = min(brutto, C.BBG_KV_JAHR) * pv["an"]
+        ein = max(0.0, brutto - C.WERBUNGSKOSTEN_PAUSCHBETRAG_AN)
+        vor = rv + kv * (1 - C.KV_ANTEIL_KRANKENGELD_ABZUG) + pvb
+        wachstum = ann.lohnsteigerung
+        text = (f"Gehalt {brutto:,.0f} € − Arbeitnehmer-Pauschbetrag {C.WERBUNGSKOSTEN_PAUSCHBETRAG_AN:,.0f} € = {ein:,.0f} € Einkünfte; "
+                f"Vorsorge: RV-Anteil {rv:,.0f} € + KV {kv * 0.96:,.0f} € + PV {pvb:,.0f} € = {vor:,.0f} €")
+    else:
+        ba = C.besteuerungsanteil(rentenbeginn_jahr)
+        frei = math.ceil((1 - ba / 100) * brutto)
+        ein = max(0.0, brutto - frei - C.WERBUNGSKOSTEN_PAUSCHBETRAG_RENTE)
+        vor = min(brutto, C.BBG_KV_JAHR) * (C.KV_ALLGEMEIN / 2 + z / 2 + pv["voll"])
+        wachstum = ann.rentensteigerung
+        text = (f"Rente {brutto:,.0f} € − Rentenfreibetrag {frei:,.0f} € (Besteuerungsanteil {ba:.1f} %) − WK-Pauschbetrag "
+                f"{C.WERBUNGSKOSTEN_PAUSCHBETRAG_RENTE:.0f} € = {ein:,.0f} € Einkünfte; Vorsorge: KV+PV {vor:,.0f} €")
+    return {"einkuenfte": round(ein, 0), "vorsorge": round(vor, 0), "wachstum": wachstum, "text": text}

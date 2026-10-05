@@ -207,3 +207,74 @@ def test_rentenauskunft_ableitungen_und_fahrplan():
     # Schul-/Studienzeit zählt nur für 35, nicht für 45 Jahre
     a = I.leite_ab(replace(p, wz_modus="schaetzung", berufsstart="2000-09-01", schul_monate=60), pr.annahmen)
     assert abs((a.wartezeit_jahre_35 - a.wartezeit_jahre_45) - 5.0) < 1e-9
+
+
+# ---------------------------------------------------------------------------
+# Netto-Kette: unabhängige Handrechnung und Plausibilitätsprüfungen
+# ---------------------------------------------------------------------------
+def _rentner(**person):
+    from dataclasses import replace
+    pr = standard_projekt(); pr.annahmen.start = "2026-10"
+    p = replace(pr.person, depot_start=0, ep_aktuell=44.0, ep_pro_jahr=0.0, geburtsdatum="1961-03-10",
+                wartezeit_jahre_35=45, wartezeit_jahre_45=45, kinder_geburtsjahre=[1990], partner_wachstum=0.0, **person)
+    a = replace(pr.annahmen, tarif_indexierung=0.0, rentensteigerung=0.0, inflation=0.0)
+    return E.simuliere(p, a, Szenario(erwerbsende_alter_m=66 * 12 + 8, rentenbeginn_alter_m=66 * 12 + 8)), p
+
+
+def test_handrechnung_single_rentner():
+    r, _ = _rentner()
+    # Rentenbeginn 12/2027, ZF 1,01 (2 Monate Aufschub): 44 EP × 42,52 € × 1,01
+    brutto = 44 * 42.52 * 1.01
+    assert abs(brutto - 1889.59) < 0.01
+    jahr = 12 * brutto
+    freib = math.ceil(0.15 * jahr)                                   # Besteuerungsanteil 2027 = 85 %
+    kv, pv = 12 * brutto * (0.073 + 0.029 / 2), 12 * brutto * 0.036
+    zve = math.floor(jahr - freib - 102 - kv - pv - 36)
+    y = (zve - 12_348) / 10_000
+    est = math.floor((914.51 * y + 1400) * y)
+    erwartet = brutto - (kv + pv + est) / 12
+    row = r.monat[r.monat.jahr == 2029].iloc[0]
+    assert abs(row["rente_netto"] - erwartet) < 0.01, (row["rente_netto"], erwartet)
+
+
+def test_zusammenveranlagung_zerlegung_der_haushaltssteuer():
+    for partner in (0, 15_000, 60_000):
+        r, _ = _rentner(steuerklasse="4", partner_einkuenfte_jahr=float(partner), partner_vorsorge_jahr=partner * 0.1)
+        j = r.jahr.set_index("jahr").loc[2029]
+        # Zusatzsteuer + Steuer des Partners allein = Steuer des Haushalts
+        assert abs(j["steuer_person"] + j["est_basis_partner"] - (j["est_haushalt"] + j["soli"] * 0 + j["kist"] * 0) - (j["soli"] + j["kist"])) < 1.0
+        assert j["steuer_person"] >= 0
+        # Splitting senkt die Gesamtlast gegenüber getrennter Besteuerung beider Partner
+        einzel = E.einkommensteuer(j["zve_person"] - 36, False) + E.einkommensteuer(max(0, j["partner_zve"] - 36), False)
+        assert j["est_haushalt"] <= einzel + 1
+
+
+def test_anteilig_und_marginal_summieren_sich_plausibel():
+    r, _ = _rentner(steuerklasse="4", partner_einkuenfte_jahr=54_000.0, partner_vorsorge_jahr=6_000.0)
+    j = r.jahr.set_index("jahr").loc[2029]
+    assert j["steuer_anteilig"] < j["steuer_person"]          # Marginal belastet den Zweitverdiener stärker
+    assert j["steuer_anteilig"] > 0
+
+
+def test_betriebsrente_kvdr_beitragspflichtig():
+    a, _ = _rentner()
+    b, _ = _rentner(betriebsrente_monat=400.0, betriebsrente_wachstum=0.0)
+    ra, rb = a.monat[a.monat.jahr == 2029].iloc[0], b.monat[b.monat.jahr == 2029].iloc[0]
+    lf = E.lohn_index(2029, Annahmen())      # Freibetrag wächst mit der Bezugsgröße
+    assert abs(rb["betr_kv"] - (400 - 197.75 * lf) * (0.146 + 0.029)) < 0.01
+    assert abs(rb["betr_pv"] - 400 * 0.036) < 0.01
+    assert abs(rb["rente_kv"] - ra["rente_kv"]) < 1e-9                     # gesetzliche Rente unverändert
+    assert 150 < rb["betr_netto"] < 400 - rb["betr_kv"] - rb["betr_pv"]    # nach Steuer weniger als nach SV
+    assert abs(rb["renten_netto"] - (rb["rente_netto"] + rb["betr_netto"])) < 1e-9
+
+
+def test_brutto_netto_und_partner_helfer():
+    import insights as I
+    r, p = _rentner()
+    bn = I.brutto_netto(r)
+    assert abs(bn["brutto"] - bn["kv"] - bn["pv"] - bn["steuer"] - bn["netto"]) < 0.01
+    pr = standard_projekt(); pr.annahmen.start = "2026-10"
+    g = I.partner_aus_brutto("gehalt", 40_000, pr.person, pr.annahmen)
+    assert g["einkuenfte"] == 40_000 - 1_230 and 5_000 < g["vorsorge"] < 9_000
+    rn = I.partner_aus_brutto("rente", 20_000, pr.person, pr.annahmen, rentenbeginn_jahr=2020)
+    assert rn["einkuenfte"] == 20_000 - math.ceil(0.2 * 20_000) - 102

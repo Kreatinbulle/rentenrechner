@@ -42,7 +42,9 @@ class Person:
     kv_modus: str = "auto"                    # auto | kvdr | freiwillig
     gkv_anteil_zweite_haelfte: float = 95.0   # % der 2. Erwerbshälfte in GKV (9/10-Regel)
     luecken_kv_familienversichert: bool = False
-    sonstige_einkuenfte_jahr: float = 0.0     # z. B. Mieten/Betriebsrente (voll steuerpflichtig)
+    sonstige_einkuenfte_jahr: float = 0.0     # z. B. Mieten/Zinsen (voll steuerpflichtig, nicht KVdR-beitragspflichtig)
+    betriebsrente_monat: float = 0.0          # Betriebsrente/Versorgungsbezüge brutto je Monat bei Rentenbeginn
+    betriebsrente_wachstum: float = 0.01      # jährliche Anpassung der Betriebsrente
     # Privatvermögen / Depot
     depot_start: float = 0.0
     depot_gewinnanteil: float = 0.3           # Anteil Kursgewinne am Depotwert (0..1)

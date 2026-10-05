@@ -207,7 +207,16 @@ def _jahressteuer(p: Person, ann: Annahmen, jahr: int, y0: int, d: dict, ausglei
         partner = 0.0
     total = steuer_gesamt(person_zve + partner - sa_pb, split, f, p.kirchensteuer)
     basis = steuer_gesamt(partner - sa_pb, split, f, p.kirchensteuer) if split else steuer_gesamt(0, False, f, 0)
+    # Vergleichsgröße: anteilige Aufteilung der Gesamtschuld wie im Steuerbescheid (§ 270 AO) nach fiktiver Einzelveranlagung
+    if split:
+        e_p = steuer_gesamt(max(0.0, person_zve - C.SONDERAUSGABEN_PAUSCHBETRAG), False, f, p.kirchensteuer)["summe"]
+        e_q = steuer_gesamt(max(0.0, partner - C.SONDERAUSGABEN_PAUSCHBETRAG), False, f, p.kirchensteuer)["summe"]
+        anteil = e_p / (e_p + e_q) if (e_p + e_q) > 0 else 0.5
+        zusatz_anteilig = total["summe"] * anteil
+    else:
+        zusatz_anteilig = total["summe"] - basis["summe"]
     return {
+        "zusatz_anteilig": zusatz_anteilig,
         "wk_rente": wk_rente, "wk_an": wk_an, "av_abzug": av_abzug, "sa_pb": sa_pb,
         "person_zve": person_zve, "partner": partner,
         "haushalt": total, "basis": basis,
@@ -425,15 +434,25 @@ def simuliere(p: Person, ann: Annahmen, sz: Szenario) -> Ergebnis:  # noqa: C901
             if hz_payroll > 0 and rv_pflicht:      # EP nur aus Hinzuverdienst (Gehalt steckt in ep_pro_jahr)
                 ep_zus.append((rb_idx if i < rb_idx else midx(jahr + 1, 7),
                                min(hz_payroll, bbg_rv_m) / (de / 12)))   # EP = Monatsentgelt / (Durchschnittsentgelt/12)
+            # --- Betriebsrente (Versorgungsbezug) -----------------------
+            betr = (p.betriebsrente_monat * (1 + p.betriebsrente_wachstum) ** ((i - rb_idx) / 12)
+                    if (i >= rb_idx and p.betriebsrente_monat > 0) else 0.0)
+            betr_kv = betr_pv = 0.0
             # --- KV/PV auf Rente ---------------------------------------
             kv_r = pv_r = zus_kv = zus_pv = 0.0
+            if betr > 0 and kv_mod == "kvdr":
+                # KVdR: Betriebsrente voll beitragspflichtig (14,6 % + Zusatzbeitrag, kein DRV-Anteil), KV-Freibetrag, PV-Freigrenze
+                freib = C.KV_FREIBETRAG_VERSORGUNGSBEZUEGE_MONAT * lf
+                b_base = min(betr, max(0.0, bbg_kv_m - min(rente, bbg_kv_m)))
+                betr_kv = max(0.0, b_base - freib) * (C.KV_ALLGEMEIN + z)
+                betr_pv = b_base * pv["voll"] if betr > freib else 0.0
             if rente > 0:
                 rbase = min(rente, bbg_kv_m)
                 if kv_mod == "kvdr":
                     kv_r = rbase * kv_rentner_satz
                     pv_r = rbase * pv["voll"]
                 else:
-                    base = min(rente + sonstige, bbg_kv_m)
+                    base = min(rente + betr + sonstige, bbg_kv_m)
                     zus_kv = rbase * (C.KV_ALLGEMEIN / 2 + z / 2)
                     zus_pv = rbase * C.PV_BEITRAGSSATZ / 2
                     kv_r = base * (C.KV_ALLGEMEIN + z) - zus_kv
@@ -446,7 +465,7 @@ def simuliere(p: Person, ann: Annahmen, sz: Szenario) -> Ergebnis:  # noqa: C901
             r.update(gehalt_brutto=gehalt, rente_brutto=rente, hinz_brutto=hz, hinz_minijob=minijob,
                      sonstige_brutto=sonstige, rv_an=rv_an, av_an=av_an, kv_an=kv_an, pv_an=pv_an,
                      rv_pflicht=rv_pflicht, rente_kv=kv_r, rente_pv=pv_r, zuschuss_kv=zus_kv, zuschuss_pv=zus_pv,
-                     luecken_kv=kv_luecke, wage=wage)
+                     luecken_kv=kv_luecke, wage=wage, betr_brutto=betr, betr_kv=betr_kv, betr_pv=betr_pv)
             mrows.append(r)
 
         # ------------------- Jahresaggregation & Steuer -------------------
@@ -472,10 +491,11 @@ def simuliere(p: Person, ann: Annahmen, sz: Szenario) -> Ergebnis:  # noqa: C901
         stpfl_rente = max(0.0, rente_y * s - (freibetrag_rente or 0.0)) if rente_y > 0 else 0.0
         sonst_y = sm("sonstige_brutto")
         # Vorsorge KV/PV (Basis): Rente + AN-Anteil Lohn (KV um 4 % gekürzt) + Lücken-KV
-        kvpv_y = (sm("rente_kv") + sm("rente_pv") + sm("kv_an") * (1 - C.KV_ANTEIL_KRANKENGELD_ABZUG) + sm("pv_an")
+        betr_y = sm("betr_brutto")
+        kvpv_y = (sm("rente_kv") + sm("rente_pv") + sm("betr_kv") + sm("betr_pv") + sm("kv_an") * (1 - C.KV_ANTEIL_KRANKENGELD_ABZUG) + sm("pv_an")
                   + sm("luecken_kv")) * s
         rv_an_y = sm("rv_an") * s
-        d = {"rente_stpfl": stpfl_rente, "lohn_brutto": wage_y * s, "sonstige": sonst_y * s,
+        d = {"rente_stpfl": stpfl_rente, "lohn_brutto": wage_y * s, "sonstige": (sonst_y + betr_y) * s,
              "kvpv_basis": kvpv_y, "rv_an": rv_an_y, "rv_ag": rv_an_y, "s": s}
         zahlung = zahlungen.get(jahr, 0.0)
         st0 = _jahressteuer(p, ann, jahr, y0, d, 0.0)
@@ -490,26 +510,27 @@ def simuliere(p: Person, ann: Annahmen, sz: Szenario) -> Ergebnis:  # noqa: C901
         tb_r = max(0.0, stpfl_rente - st1["wk_rente"]) / s
         tb_w = max(0.0, (wage_y * s - st1["wk_an"])) / s
         tb_s = sonst_y
-        tb_sum = tb_r + tb_w + tb_s
-        shares = (tb_r / tb_sum, tb_w / tb_sum, tb_s / tb_sum) if tb_sum > 0 else (0, 0, 0)
+        tb_b = betr_y
+        tb_sum = tb_r + tb_w + tb_s + tb_b
+        shares = (tb_r / tb_sum, tb_w / tb_sum, tb_s / tb_sum, tb_b / tb_sum) if tb_sum > 0 else (0, 0, 0, 0)
         gesamt_brutto = {"r": rente_y, "w": wage_y, "s": sonst_y}
         jr = {
             "jahr": jahr, "monate": n_m, "annualisiert": s != 1.0,
             "rente_brutto": rente_y, "rente_stpfl": stpfl_rente / s, "rentenfreibetrag": freibetrag_rente or 0.0,
-            "lohn_brutto": wage_y, "sonstige": sonst_y,
+            "lohn_brutto": wage_y, "sonstige": sonst_y, "betriebsrente": betr_y,
             "wk_rente": st1["wk_rente"], "wk_an": st1["wk_an"], "vorsorge_kvpv": kvpv_y / s,
             "altersvorsorge_abzug": st1["av_abzug"] / s, "ausgleichszahlung": zahlung,
             "sa_pauschbetrag": st1["sa_pb"], "zve_person": st1["person_zve"] / s, "partner_zve": st1["partner"],
             "zve_haushalt": st1["haushalt"]["zve"], "est_haushalt": st1["haushalt"]["est"],
             "est_basis_partner": st1["basis"]["est"], "soli": st1["zusatz_soli"], "kist": st1["zusatz_kist"],
-            "steuer_person": steuer_y, "steuerersparnis_ausgleich": ersparnis,
+            "steuer_person": steuer_y, "steuer_anteilig": st1["zusatz_anteilig"] / s, "steuerersparnis_ausgleich": ersparnis,
             "besteuerungsanteil": ba,
         }
         jahr_rows.append(jr)
         _trace_jahr(tr, jahr, jr, st0, st1, fb_text, ba, s, p)
 
         # ------------------- Monatsverteilung Netto -----------------------
-        steuer_r, steuer_w, steuer_s = (steuer_y * x for x in shares)
+        steuer_r, steuer_w, steuer_s, steuer_b = (steuer_y * x for x in shares)
         # Ausgleich-Steuerersparnis ist bereits in steuer_y enthalten (senkt Lohnsteuer)
         for r in mrows:
             r["steuer_rente"] = steuer_r * r["rente_brutto"] / rente_y if rente_y > 0 else 0.0
@@ -522,6 +543,9 @@ def simuliere(p: Person, ann: Annahmen, sz: Szenario) -> Ergebnis:  # noqa: C901
             hz_pay_netto = wage_netto * (1 - gehalt_anteil)
             r["hinz_netto"] = hz_pay_netto + (r["hinz_brutto"] if r["hinz_minijob"] else 0.0)
             r["sonst_netto"] = r["sonstige_brutto"] - r["steuer_sonst"]
+            r["steuer_betr"] = steuer_b * r["betr_brutto"] / betr_y if betr_y > 0 else 0.0
+            r["betr_netto"] = r["betr_brutto"] - r["betr_kv"] - r["betr_pv"] - r["steuer_betr"]
+            r["renten_netto"] = r["rente_netto"] + r["betr_netto"]
             r["ausgleich_zahlung"] = zahlung if r["monat"] == 12 else 0.0
             r["ausgleich_steuerersparnis"] = ersparnis if r["monat"] == 12 else 0.0
             # ------------- Depot ------------------------------------------
@@ -530,7 +554,7 @@ def simuliere(p: Person, ann: Annahmen, sz: Szenario) -> Ergebnis:  # noqa: C901
             i = r["i"]
             depot *= (1 + p.depot_rendite) ** (1 / 12)
             r["depot_zuwachs_basis"] = depot
-            netto_ohne_depot = (r["rente_netto"] + r["hinz_netto"] + r["sonst_netto"] - r["luecken_kv"] + r["gehalt_netto"])
+            netto_ohne_depot = (r["renten_netto"] + r["hinz_netto"] + r["sonst_netto"] - r["luecken_kv"] + r["gehalt_netto"])
             aktiv = sz.wunsch_netto_monat > 0 and i >= ew_idx and (sz.entnahme_modus == "dauerhaft" or i < rb_idx)
             need = max(0.0, sz.wunsch_netto_monat * r["deflator"] - netto_ohne_depot) if aktiv else 0.0
             x = netto_x = tax = luecke = 0.0
@@ -554,11 +578,11 @@ def simuliere(p: Person, ann: Annahmen, sz: Szenario) -> Ergebnis:  # noqa: C901
         rows.extend(mrows)
 
     mdf = pd.DataFrame(rows)
-    mdf["rente_netto_real"] = mdf["rente_netto"] / mdf["deflator"]
-    mdf["netto_verfuegbar"] = (mdf["gehalt_netto"] + mdf["rente_netto"] + mdf["hinz_netto"] + mdf["sonst_netto"]
+    mdf["rente_netto_real"] = mdf["renten_netto"] / mdf["deflator"]
+    mdf["netto_verfuegbar"] = (mdf["gehalt_netto"] + mdf["renten_netto"] + mdf["hinz_netto"] + mdf["sonst_netto"]
                                - mdf["luecken_kv"] + mdf["entnahme_netto"])
     mdf["netto_verfuegbar_real"] = mdf["netto_verfuegbar"] / mdf["deflator"]
-    mdf["fluss_basis1"] = mdf["rente_netto"] - mdf["ausgleich_zahlung"] + mdf["ausgleich_steuerersparnis"]
+    mdf["fluss_basis1"] = mdf["renten_netto"] - mdf["ausgleich_zahlung"] + mdf["ausgleich_steuerersparnis"]
     mdf["fluss_basis2"] = mdf["netto_verfuegbar"] - mdf["ausgleich_zahlung"]
     res.monat = mdf
     res.jahr = pd.DataFrame(jahr_rows)
@@ -585,6 +609,8 @@ def _trace_jahr(tr: Tracer, jahr: int, jr: dict, st0: dict, st1: dict, fb_text: 
         tr.add(g, "Steuerpflichtiger Rentenanteil", "Jahresrente − Rentenfreibetrag", round(jr["rente_stpfl"], 2), "€")
     if jr["lohn_brutto"] > 0:
         tr.add(g, "Arbeitslohn brutto", "Gehalt + Hinzuverdienst (ohne Minijob)", round(jr["lohn_brutto"], 2), "€")
+    if jr.get("betriebsrente", 0) > 0:
+        tr.add(g, "Betriebsrente brutto", "voll steuerpflichtig (§ 22 Nr. 5 EStG); in der KVdR voll beitragspflichtig", round(jr["betriebsrente"], 2), "€")
     if jr["sonstige"] > 0:
         tr.add(g, "Sonstige Einkünfte", "Eingabe, voll steuerpflichtig", round(jr["sonstige"], 2), "€")
     if jr["wk_rente"]:
@@ -609,6 +635,9 @@ def _trace_jahr(tr: Tracer, jahr: int, jr: dict, st0: dict, st1: dict, fb_text: 
     if jr["steuerersparnis_ausgleich"]:
         tr.add(g, "Steuerersparnis durch Ausgleichszahlung", "Steuer ohne − Steuer mit Sonderzahlung", round(jr["steuerersparnis_ausgleich"], 2), "€")
     tr.add(g, "Steuer der Person gesamt", "ESt + Soli + KiSt (zugerechnet)", round(jr["steuer_person"], 2), "€")
+    if p.verheiratet:
+        tr.add(g, "Zum Vergleich: anteilige Aufteilung (§ 270 AO)", "Gesamtsteuer × Einzelsteuer Person / (Einzelsteuer Person + Partner)",
+               round(jr["steuer_anteilig"], 2), "€", "wie im Steuerbescheid aufgeteilt – für Szenariovergleiche ist die Mehrbelastung (oben) maßgeblich")
 
 
 # ============================================================================
@@ -618,7 +647,7 @@ def serie_monatlich(res: Ergebnis, basis: int, real: bool) -> pd.Series:
     """Monatliches verfügbares Netto (je nach Basis) – Index: Alter in Jahren."""
     m = res.monat
     if basis == 1:
-        v = m["rente_netto"]
+        v = m["renten_netto"]
     else:
         v = m["netto_verfuegbar"]
     if real:
@@ -643,7 +672,7 @@ def _kennzahlen(res, p, ann, sz, a1, ep1_bew, rb_idx, rag, start_idx, zahlungen,
     sel = m[m["jahr"] == jr]
     if len(sel) == 0:
         sel = first
-    k["rente_netto_start"] = float(sel["rente_netto"].mean()) if len(sel) else float("nan")
+    k["rente_netto_start"] = float(sel["renten_netto"].mean()) if len(sel) else float("nan")
     k["rente_netto_start_real"] = float(sel["rente_netto_real"].mean()) if len(sel) else float("nan")
     k["rente_brutto_1jahr"] = float(sel["rente_brutto"].mean()) if len(sel) else float("nan")
     k["rentenbeginn_alter_m"] = sz.rentenbeginn_alter_m
@@ -660,7 +689,7 @@ def _kennzahlen(res, p, ann, sz, a1, ep1_bew, rb_idx, rag, start_idx, zahlungen,
         row = m[m["alter_m"] == alter * 12 - 1]
         k[f"netto_{alter}_nom"] = float(row["netto_verfuegbar"].iloc[0]) if len(row) else float("nan")
         k[f"netto_{alter}_real"] = float(row["netto_verfuegbar_real"].iloc[0]) if len(row) else float("nan")
-        k[f"rente_netto_{alter}_nom"] = float(row["rente_netto"].iloc[0]) if len(row) else float("nan")
+        k[f"rente_netto_{alter}_nom"] = float(row["renten_netto"].iloc[0]) if len(row) else float("nan")
         k[f"rente_netto_{alter}_real"] = float(row["rente_netto_real"].iloc[0]) if len(row) else float("nan")
     return k
 

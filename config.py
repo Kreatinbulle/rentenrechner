@@ -64,6 +64,7 @@ KV_ERMAESSIGT = 0.140              # ohne Krankengeldanspruch (Vollrentner im Jo
 ZUSATZBEITRAG_DURCHSCHNITT = 0.029 # durchschnittlicher Zusatzbeitrag 2026 (Default). PRÜFEN.
 BBG_KV_JAHR = 69_750.0             # BBG KV/PV 2026
 MINDESTBEMESSUNG_FREIW_KV_MONAT = 1_318.33   # 1/3 Bezugsgröße 2026 (freiwillige KV, Lücke)
+KV_FREIBETRAG_VERSORGUNGSBEZUEGE_MONAT = 197.75   # 1/20 Bezugsgröße 2026: Freibetrag (KV) bzw. Freigrenze (PV) für Betriebsrenten in der KVdR. PRÜFEN.
 
 PV_BEITRAGSSATZ = 0.036            # PV 2026 gesamt
 PV_KINDERLOSENZUSCHLAG = 0.006     # nur Mitglieder ohne Kinder (ab 23 Jahren)
