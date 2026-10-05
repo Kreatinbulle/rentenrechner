@@ -128,9 +128,13 @@ def einfluss(p: Person, ann: Annahmen, szs: list[Szenario], idx: int, ref: int, 
     if p.depot_start > 0:
         faktoren.append(("Depot-Rendite p.a.", f"{p.depot_rendite - .02:.1%}", f"{p.depot_rendite + .02:.1%}",
                          replace(p, depot_rendite=p.depot_rendite - .02), ann, replace(p, depot_rendite=p.depot_rendite + .02), ann))
+    aktuell = {"Rentenanpassung p.a.": f"{ann.rentensteigerung:.1%}", "Inflation p.a.": f"{ann.inflation:.1%}",
+               "Gehaltssteigerung p.a.": f"{ann.lohnsteigerung:.1%}", "Entgeltpunkte je Arbeitsjahr": f"{p.ep_pro_jahr:.2f}",
+               "Steuertarif-Indexierung": f"{ann.tarif_indexierung:.1%}", "KV-Zusatzbeitrag": f"{ann.zusatzbeitrag:.1%}",
+               "Depot-Rendite p.a.": f"{p.depot_rendite:.1%}"}
     rows = []
     for name, ll, lh, p1, a1, p2, a2 in faktoren:
-        rows.append({"Faktor": name, "niedrig": ll, "hoch": lh,
+        rows.append({"Faktor": name, "aktuell": aktuell[name], "niedrig": ll, "hoch": lh,
                      "Δ niedrig": metrik(p1, a1) - basis_wert, "Δ hoch": metrik(p2, a2) - basis_wert})
     df = pd.DataFrame(rows)
     df["Spanne"] = (df["Δ niedrig"].abs()).combine(df["Δ hoch"].abs(), max)

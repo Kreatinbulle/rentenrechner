@@ -496,13 +496,13 @@ def chart_depot(ergs, real):
 
 def chart_tornado(df: pd.DataFrame, titel: str):
     fig = go.Figure()
-    labels = [f"{r.Faktor}<br><sub>{r.niedrig} ↔ {r.hoch}</sub>" for r in df.itertuples()]
-    fig.add_trace(go.Bar(y=labels, x=df["Δ niedrig"], orientation="h", name="Wert niedriger", marker_color="#56B4E9",
+    labels = [f"{r.Faktor}<br><sub>jetzt {r.aktuell} · blau {r.niedrig} · orange {r.hoch}</sub>" for r in df.itertuples()]
+    fig.add_trace(go.Bar(y=labels, x=df["Δ niedrig"], orientation="h", name="Annahme niedriger", marker_color="#56B4E9",
                          hovertemplate="%{x:,.0f} €"))
-    fig.add_trace(go.Bar(y=labels, x=df["Δ hoch"], orientation="h", name="Wert höher", marker_color="#D55E00",
+    fig.add_trace(go.Bar(y=labels, x=df["Δ hoch"], orientation="h", name="Annahme höher", marker_color="#D55E00",
                          hovertemplate="%{x:,.0f} €"))
     fig.update_layout(barmode="relative", title=titel, height=120 + 70 * len(df), margin=dict(l=10, r=10, t=50, b=10),
-                      xaxis_title="Veränderung des Vorsprungs (€)", xaxis_tickformat=",.0f", legend=dict(orientation="h", y=-0.15))
+                      xaxis_title="← schlechter für das Szenario | besser für das Szenario →", xaxis_tickformat=",.0f", legend=dict(orientation="h", y=-0.15))
     return fig
 
 
@@ -591,8 +591,12 @@ def page_ergebnis():
 
     with t4:
         st.subheader("Was beeinflusst das Ergebnis am meisten?")
-        WHY("Wir verändern jede Annahme einzeln nach oben und unten und messen, wie stark sich der <b>Vorsprung eines Szenarios gegenüber der Referenz</b> "
-            "verändert. Lange Balken = Annahme ist entscheidend; kurze = unkritisch.")
+        WHY("<b>Die Frage:</b> Meine Annahmen sind Schätzungen. Welche davon entscheidet, ob ein Szenario besser ist als die Referenz? "
+            "Wir verschieben dazu jede Annahme einzeln nach <b>unten (blau)</b> und nach <b>oben (orange)</b> und messen, "
+            "<b>um wie viel Euro sich der Vorsprung dadurch ändert</b>.<br><br>"
+            "<b>So liest du es:</b> Ein Balken nach <b>rechts</b> heißt: Das Szenario schneidet dann <i>besser</i> ab als im Basisfall. "
+            "Nach <b>links</b> heißt: <i>schlechter</i>. Je länger der Balken, desto wichtiger ist die Annahme. "
+            "Fehlt ein Balken, hat die Annahme bei der gewählten Vergleichsbasis keinen Einfluss.")
         if len(ergs) < 2:
             st.info("Dafür brauchst du mindestens zwei gültige Szenarien.")
         else:
@@ -604,9 +608,23 @@ def page_ergebnis():
             df = _einfluss(json.dumps(asdict(pr.person)), json.dumps(asdict(pr.annahmen)),
                            json.dumps([asdict(s) for s in pr.szenarien]), i_s, i_r, basis, real, alter)
             st.caption(f"Basiswert: Vorsprung von „{names[sel]}“ gegenüber „{names[ref]}“ bis Alter {alter}: **{eur(df.attrs['basis_wert'])}**")
-            st.plotly_chart(chart_tornado(df, "Einfluss auf den Vorsprung"), width="stretch")
+            st.plotly_chart(chart_tornado(df[df["Spanne"] >= 1] if (df["Spanne"] >= 1).any() else df, "Wie stark verändert die Annahme den Vorsprung? (€)"), width="stretch")
             top = df.iloc[-1]
-            WHY(f"Am sensibelsten reagiert das Ergebnis auf <b>{top['Faktor']}</b> (bis ±{eur(top['Spanne'])}).")
+            basis_w = df.attrs["basis_wert"]
+            st.markdown("**In Worten:**")
+            for r in df.iloc[::-1].itertuples():
+                if r.Spanne < 1:
+                    continue
+                def _s(d):
+                    return f"{'steigt' if d > 0 else 'sinkt'} der Vorsprung um {eur(abs(d))}"
+                st.markdown(f"- **{r.Faktor}** (jetzt {r.aktuell}): bei {r.niedrig} {_s(r._5)}, bei {r.hoch} {_s(r._6)}.")
+            ohne = df[df["Spanne"] < 1]["Faktor"].tolist()
+            if ohne:
+                st.caption("Ohne Einfluss bei dieser Vergleichsbasis: " + ", ".join(ohne))
+            WHY(f"<b>Fazit:</b> Am stärksten hängt das Ergebnis von <b>{top['Faktor']}</b> ab (bis ±{eur(top['Spanne'])}). "
+                + ("Selbst bei den ungünstigsten Annahmen bleibt der Vorsprung positiv – das Ergebnis ist <b>robust</b>."
+                   if (basis_w + df[['Δ niedrig', 'Δ hoch']].min().min()) > 0 else
+                   "Der Vorsprung kann bei ungünstigen Annahmen ins Negative kippen – das Ergebnis ist <b>nicht eindeutig</b>."))
 
     with t5:
         e = ergs[st.selectbox("Szenario", range(len(ergs)), format_func=lambda i: ergs[i].szenario.name, key="w_trace_sz")]
