@@ -398,7 +398,7 @@ def page_vers():
     if p["betriebsrente_monat"] > 0:
         WHY("<b>Achtung, oft unterschätzt:</b> Betriebsrenten sind <b>voll steuerpflichtig</b> und in der gesetzlichen Krankenversicherung der Rentner "
             "<b>voll beitragspflichtig</b> (14,6 % + Zusatzbeitrag + Pflege – ohne Zuschuss der Rentenversicherung; Freibetrag nur ca. 198 €/Monat). "
-            "Von 100 € Betriebsrente bleiben deshalb oft nur etwa 60–70 € netto.")
+            "Von 100 € Betriebsrente bleiben deshalb je nach Höhe und Steuersatz häufig nur etwa 65–85 € netto.")
     st.markdown("##### Weitere steuerpflichtige Einkünfte")
     W(st.number_input, "Sonstige Einkünfte pro Jahr (z. B. Mieten, Zinsen)", p, "sonstige_einkuenfte_jahr", "p",
       min_value=0.0, step=500.0, help="Voll steuerpflichtig, wachsen mit der Inflation. In der KVdR nicht beitragspflichtig, bei freiwilliger Versicherung schon.")
