@@ -494,6 +494,19 @@ def chart_depot(ergs, real):
     return _layout(fig, "Depotverlauf", "€")
 
 
+def chart_wasserfall(df: pd.DataFrame, name: str, ref_name: str):
+    fig = go.Figure(go.Waterfall(
+        orientation="v", measure=["relative"] * len(df) + ["total"], x=list(df["Komponente"]) + ["Vorsprung gesamt"],
+        y=list(df["Δ"]) + [0], text=[f"{v:+,.0f} €".replace(",", ".") for v in df["Δ"]] + [f"{df['Δ'].sum():+,.0f} €".replace(",", ".")],
+        textposition="outside", connector=dict(line=dict(color="#999", width=1)),
+        increasing=dict(marker=dict(color="#009E73")), decreasing=dict(marker=dict(color="#D55E00")),
+        totals=dict(marker=dict(color="#0072B2")), hovertemplate="%{y:,.0f} €<extra></extra>"))
+    fig.update_layout(title=f"„{name}“ gegenüber „{ref_name}“: Woher kommt der Unterschied?", height=480,
+                      margin=dict(l=10, r=10, t=60, b=10), yaxis_title="€ (Unterschied)", yaxis_tickformat=",.0f", showlegend=False)
+    fig.update_xaxes(tickangle=-20)
+    return fig
+
+
 def chart_tornado(df: pd.DataFrame, titel: str):
     fig = go.Figure()
     labels = [f"{r.Faktor}<br><sub>jetzt {r.aktuell} · blau {r.niedrig} · orange {r.hoch}</sub>" for r in df.itertuples()]
@@ -540,7 +553,7 @@ def page_ergebnis():
         for w in e.warnungen:
             st.warning(f"**{e.szenario.name}:** {w}")
 
-    t1, t2, t3, t4, t5, t6 = st.tabs(["🏁 Überblick", "📈 Verlauf", "⚖️ Break-even", "🎚 Einflussfaktoren", "🔍 Rechenweg", "📚 Zahlen & Methodik"])
+    t1, t2, t3, tw, t4, t5, t6 = st.tabs(["🏁 Überblick", "📈 Verlauf", "⚖️ Break-even", "🧮 Woher der Unterschied?", "🎚 Einflussfaktoren", "🔍 Rechenweg", "📚 Zahlen & Methodik"])
 
     with t1:
         st.markdown('<div class="fazit">' + re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", "<br>".join(I.fazit(ergs, basis, real, alter))) + "</div>", unsafe_allow_html=True)
@@ -588,6 +601,28 @@ def page_ergebnis():
             rows.append({"Szenario": e.szenario.name, "Break-even": be["text"], "Faustformel (ohne Dynamik/Steuer)": bv["text"]})
         if rows:
             st.dataframe(pd.DataFrame(rows).set_index("Szenario"), width="stretch")
+
+    with tw:
+        st.subheader("Woraus setzt sich der Unterschied zusammen?")
+        WHY("Der <b>Wasserfall</b> zerlegt den Unterschied zwischen zwei Szenarien bis zum gewählten Alter in seine Bausteine. "
+            "<b>Grün</b> = bringt dem gewählten Szenario mehr Geld, <b>orange</b> = kostet es Geld, <b>blau</b> = Ergebnis (Summe aller Bausteine). "
+            "Du siehst z. B. direkt: „Die höhere Bruttorente bringt +80.000 €, aber der fehlende Rentenbezug in den ersten Jahren kostet −60.000 €.“")
+        if len(ergs) < 2:
+            st.info("Dafür brauchst du mindestens zwei gültige Szenarien.")
+        else:
+            names_w = [e.szenario.name for e in ergs]
+            cand_w = [i for i in range(len(ergs)) if i != ref]
+            selw = st.selectbox("Szenario", cand_w, format_func=lambda i: names_w[i], key="w_wf_sel")
+            dfw = I.zerlegung(ergs[selw], ergs[ref], basis, real, alter)
+            if dfw.empty:
+                st.info("Die beiden Szenarien unterscheiden sich bei dieser Einstellung nicht.")
+            else:
+                st.plotly_chart(chart_wasserfall(dfw, names_w[selw], names_w[ref]), width="stretch")
+                tot = dfw["Δ"].sum()
+                gross = dfw.loc[dfw["Δ"].abs().idxmax()]
+                st.markdown(f"**Ergebnis bis Alter {alter}:** „{names_w[selw]}“ liegt {eur(abs(tot))} "
+                            f"{'vor' if tot >= 0 else 'hinter'} „{names_w[ref]}“. Der größte Baustein ist **{gross['Komponente']}** ({eur(gross['Δ'])}).")
+                st.caption("Bausteine unter 1 € werden ausgeblendet. Werte nominal bzw. real je nach Einstellung oben.")
 
     with t4:
         st.subheader("Was beeinflusst das Ergebnis am meisten?")

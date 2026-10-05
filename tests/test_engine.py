@@ -162,3 +162,15 @@ def test_insights_fazit_und_einfluss():
     df = I.einfluss(pr.person, pr.annahmen, pr.szenarien, 2, 0, 1, False, 85)
     assert len(df) >= 6 and "basis_wert" in df.attrs
     assert len(I.vorlagen(1967)) == 6
+
+
+def test_zerlegung_summe_gleich_differenz():
+    import insights as I
+    pr = standard_projekt(); pr.annahmen.start = "2026-10"
+    ergs = [E.simuliere(pr.person, pr.annahmen, s) for s in pr.szenarien]
+    for basis in (1, 2, 3):
+        for real in (False, True):
+            for i in (1, 2, 3, 4):
+                df = I.zerlegung(ergs[i], ergs[0], basis, real, 85)
+                diff = I._kum(ergs[i], basis, real, 85) - I._kum(ergs[0], basis, real, 85)
+                assert abs(df["Δ"].sum() - diff) < 5, (basis, real, i, df["Δ"].sum(), diff)

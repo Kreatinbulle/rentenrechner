@@ -140,3 +140,42 @@ def einfluss(p: Person, ann: Annahmen, szs: list[Szenario], idx: int, ref: int, 
     df["Spanne"] = (df["Δ niedrig"].abs()).combine(df["Δ hoch"].abs(), max)
     df.attrs["basis_wert"] = basis_wert
     return df.sort_values("Spanne", ascending=True)
+
+
+# ----------------------------------------------------------------------------
+def zerlegung(a: E.Ergebnis, ref: E.Ergebnis, basis: int, real: bool, alter: int) -> pd.DataFrame:
+    """Zerlegt den Vorsprung von `a` gegenüber `ref` (kumuliert bis `alter`) in seine Bestandteile.
+    Die Summe der Zeilen entspricht exakt der Differenz der Kumulierungskurven."""
+
+    def summen(e: E.Ergebnis) -> dict:
+        m = e.monat
+        idx = m["alter"].values
+        pos = int(pd.Index(idx).searchsorted(alter - 1e-9))
+        pos = min(pos, len(m) - 1)
+        mm = m.iloc[: pos + 1]
+        d = mm["deflator"] if real else 1.0
+        sm = lambda col: float((mm[col] / d).sum())  # noqa: E731
+        out = {
+            "Bruttorente": sm("rente_brutto"),
+            "Kranken- & Pflegeversicherung": -(sm("rente_kv") + sm("rente_pv")),
+            "Steuer auf die Rente": -sm("steuer_rente"),
+            "Ausgleichszahlung (§ 187a)": -sm("ausgleich_zahlung"),
+            "Steuerersparnis Ausgleichszahlung": sm("ausgleich_steuerersparnis") if basis == 1 else 0.0,
+        }
+        if basis >= 2:
+            out.update({
+                "Gehalt (netto)": sm("gehalt_netto"),
+                "Nebenjob (netto)": sm("hinz_netto"),
+                "Sonstige Einkünfte (netto)": sm("sonst_netto"),
+                "KV in der Erwerbslücke": -sm("luecken_kv"),
+                "Depot-Entnahmen (netto)": sm("entnahme_netto"),
+            })
+        if basis == 3:
+            v = float((mm["depot_wert"].iloc[-1] / (mm["deflator"].iloc[-1] if real else 1.0)) - e.kennzahlen["depot_start"])
+            out["Depot-Wertveränderung"] = v
+        return out
+
+    sa, sr = summen(a), summen(ref)
+    rows = [{"Komponente": k, "Δ": sa[k] - sr[k]} for k in sa]
+    df = pd.DataFrame(rows)
+    return df[df["Δ"].abs() >= 1].reset_index(drop=True)
