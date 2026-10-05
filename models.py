@@ -20,6 +20,18 @@ class Person:
     ep_pro_jahr: float = 1.3                  # erwartete EP je weiterem Erwerbsjahr
     wartezeit_jahre_35: float = 37.0          # anrechenbare Jahre für 35-Jahre-Wartezeit heute
     wartezeit_jahre_45: float = 40.0          # anrechenbare Jahre für 45-Jahre-Wartezeit heute
+    # --- Eingabehilfen (spiegeln die Rentenauskunft; ``insights.leite_ab`` rechnet sie in die obigen Werte um)
+    ep_modus: str = "ep"                      # ep = Entgeltpunkte bekannt | rente = nur Monatsrente bekannt
+    anwartschaft_eur: float = 0.0             # Regelaltersrente ohne weitere Beiträge (€/Monat) laut Auskunft
+    auskunft_rentenwert: float = config.RENTENWERT_AB_JULI_2026   # Rentenwert, mit dem die Auskunft rechnet
+    fortgang_modus: str = "gehalt"            # gehalt | hochrechnung | direkt  (Herkunft von ep_pro_jahr)
+    hochrechnung_eur: float = 0.0             # Monatsrente laut Auskunft bei Rentenbeginn zu hochrechnung_alter_m
+    hochrechnung_alter_m: int = 67 * 12
+    wz_modus: str = "direkt"                  # direkt | schaetzung (Wartezeiten)
+    berufsstart: str = "1990-09-01"           # erster Pflichtbeitrag (ISO)
+    schul_monate: int = 0                     # Schule/Studium ab 17 (Anrechnungszeit, nur 35-Jahre-Wartezeit)
+    luecken_monate: int = 0                   # Monate ohne Pflichtbeitrag/anrechenbare Zeit
+    kind_monate: int = 0                      # Kindererziehung/Pflege ohne gleichzeitige Beiträge (zählt für 35 und 45)
     brutto_jahr: float = 62_000.0             # aktuelles Jahresbrutto (Arbeitnehmer)
     steuerklasse: str = "1"                   # 1, 3, 4, 4F, 5
     partner_einkuenfte_jahr: float = 0.0      # Partner: Einkünfte (nach Werbungskosten/Rentenfreibetrag)

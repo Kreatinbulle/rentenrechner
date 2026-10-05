@@ -18,15 +18,70 @@ def eur(x, nk=0) -> str:
 
 
 # ----------------------------------------------------------------------------
-def vorlagen(geburtsjahr: int) -> dict[str, Szenario]:
-    rag = C.regelaltersgrenze_monate(geburtsjahr)
-    bl = C.abschlagsfrei_besonders_langjaehrig_monate(geburtsjahr)
-    frueh = C.FRUEHESTENS_LANGJAEHRIG_MONATE
+def _idx(d) -> int:
+    return d.year * 12 + d.month - 1
+
+
+def leite_ab(p: Person, ann: Annahmen) -> Person:
+    """Rechnet die Eingaben im Stil der Rentenauskunft in die Rechenwerte um (EP, EP/Jahr, Wartezeiten)."""
+    rw = p.auskunft_rentenwert or C.RENTENWERT_AB_JULI_2026
+    ep = p.anwartschaft_eur / rw if p.ep_modus == "rente" else p.ep_aktuell
+    start_idx, birth_idx = _idx(ann.start_datum()), _idx(p.geburt)
+    j35, j45 = p.wartezeit_jahre_35, p.wartezeit_jahre_45
+    if p.wz_modus == "schaetzung":
+        from datetime import date as _d
+        bs = _d.fromisoformat(p.berufsstart)
+        monate = max(0, start_idx - _idx(bs)) - p.luecken_monate + p.kind_monate
+        j45 = max(0.0, monate / 12)
+        j35 = max(0.0, (monate + min(p.schul_monate, 96)) / 12)
+    if p.fortgang_modus == "gehalt":
+        epj = min(p.brutto_jahr, C.BBG_RV_JAHR) / C.DURCHSCHNITTSENTGELT_JAHR
+    elif p.fortgang_modus == "hochrechnung" and p.hochrechnung_eur > 0:
+        mon = birth_idx + p.hochrechnung_alter_m + 1 - start_idx
+        if mon <= 0:
+            epj = 0.0
+        else:
+            an = E.rentenanspruch(p.geburt.year, p.hochrechnung_alter_m, j35 + mon / 12, j45 + mon / 12)
+            zf = an.zugangsfaktor if an.ok else 1.0
+            epj = max(0.0, (p.hochrechnung_eur / (rw * zf) - ep) / (mon / 12))
+    else:
+        epj = p.ep_pro_jahr
+    return replace(p, ep_aktuell=ep, ep_pro_jahr=epj, wartezeit_jahre_35=j35, wartezeit_jahre_45=j45)
+
+
+def fahrplan(p: Person, ann: Annahmen) -> dict:
+    """Früheste Rentenbeginne (Alter in Monaten + Datum) – abhängig von den Versicherungszeiten.
+    `p` muss bereits ``leite_ab`` durchlaufen haben."""
+    gj = p.geburt.year
+    rag = C.regelaltersgrenze_monate(gj)
+    bl = C.abschlagsfrei_besonders_langjaehrig_monate(gj)
+    start_idx, birth_idx = _idx(ann.start_datum()), _idx(p.geburt)
+    lo = max(start_idx - birth_idx, 0)
+
+    def wz(m):
+        am = max(0, birth_idx + m + 1 - start_idx)
+        return p.wartezeit_jahre_35 + am / 12, p.wartezeit_jahre_45 + am / 12
+
+    lang = next((m for m in range(max(C.FRUEHESTENS_LANGJAEHRIG_MONATE, lo), rag + 1)
+                 if E.rentenanspruch(gj, m, *wz(m)).ok), rag)
+    abs_ = next((m for m in range(max(bl, lo), rag + 1)
+                 if (a := E.rentenanspruch(gj, m, *wz(m))).ok and a.zugangsfaktor >= 1.0), rag)
+
+    def datum(m):
+        i = birth_idx + m + 1
+        return f"{i % 12 + 1:02d}/{i // 12}"
+
+    return {"rag": rag, "langjaehrig": lang, "abschlagsfrei": abs_, "datum": datum}
+
+
+def vorlagen(p: Person, ann: Annahmen) -> dict[str, Szenario]:
+    f = fahrplan(p, ann)
+    rag, frueh, frei = f["rag"], f["langjaehrig"], f["abschlagsfrei"]
     return {
         "So früh wie möglich (mit Abschlag)": Szenario(
             name="So früh wie möglich", erwerbsende_alter_m=frueh, rentenbeginn_alter_m=frueh),
         "Abschlagsfrei nach 45 Beitragsjahren": Szenario(
-            name="Abschlagsfrei (45 Jahre)", erwerbsende_alter_m=bl, rentenbeginn_alter_m=bl),
+            name="Abschlagsfrei (45 Jahre)", erwerbsende_alter_m=frei, rentenbeginn_alter_m=frei),
         "Zur Regelaltersgrenze": Szenario(
             name="Regelaltersgrenze", erwerbsende_alter_m=rag, rentenbeginn_alter_m=rag),
         "Früh in Rente + Abschlag ausgleichen (§ 187a)": Szenario(

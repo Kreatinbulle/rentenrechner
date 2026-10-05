@@ -161,7 +161,7 @@ def test_insights_fazit_und_einfluss():
     assert I.fazit(ergs, 1, False, 85)
     df = I.einfluss(pr.person, pr.annahmen, pr.szenarien, 2, 0, 1, False, 85)
     assert len(df) >= 6 and "basis_wert" in df.attrs
-    assert len(I.vorlagen(1967)) == 6
+    assert len(I.vorlagen(pr.person, pr.annahmen)) == 6
 
 
 def test_zerlegung_summe_gleich_differenz():
@@ -184,3 +184,26 @@ def test_auto_name_folgt_den_einstellungen():
     assert n63 == "Rente mit 63 (Abschlag 14,4 %)"
     assert n65 == "Rente mit 65 (abschlagsfrei)"
     assert "Aufhören mit 62" in I.auto_name(Szenario(erwerbsende_alter_m=62 * 12, rentenbeginn_alter_m=67 * 12), pr.person, pr.annahmen)
+
+
+def test_rentenauskunft_ableitungen_und_fahrplan():
+    import insights as I
+    from dataclasses import replace
+    pr = standard_projekt(); pr.annahmen.start = "2026-10"
+    p = pr.person
+    # Monatsrente statt EP
+    p2 = I.leite_ab(replace(p, ep_modus="rente", anwartschaft_eur=1500.0, auskunft_rentenwert=40.0), pr.annahmen)
+    assert abs(p2.ep_aktuell - 37.5) < 1e-9
+    # Hochrechnung: zurückgerechnete EP/Jahr reproduzieren die Auskunft
+    p3 = I.leite_ab(replace(p, ep_modus="ep", ep_aktuell=30.0, fortgang_modus="hochrechnung",
+                            hochrechnung_eur=2000.0, hochrechnung_alter_m=67 * 12, auskunft_rentenwert=40.0), pr.annahmen)
+    mon = E.midx(1967, 5) + 67 * 12 + 1 - E.midx(2026, 10)
+    assert abs(p3.ep_aktuell + p3.ep_pro_jahr * mon / 12 - 2000 / 40.0) < 1e-6
+    # später Berufsstart verschiebt den frühesten Rentenbeginn
+    frueh = I.fahrplan(I.leite_ab(replace(p, wz_modus="schaetzung", berufsstart="1988-09-01"), pr.annahmen), pr.annahmen)
+    spaet = I.fahrplan(I.leite_ab(replace(p, wz_modus="schaetzung", berufsstart="2000-09-01", schul_monate=60), pr.annahmen), pr.annahmen)
+    assert frueh["langjaehrig"] == 63 * 12 and spaet["langjaehrig"] > frueh["langjaehrig"]
+    assert spaet["abschlagsfrei"] > frueh["abschlagsfrei"]
+    # Schul-/Studienzeit zählt nur für 35, nicht für 45 Jahre
+    a = I.leite_ab(replace(p, wz_modus="schaetzung", berufsstart="2000-09-01", schul_monate=60), pr.annahmen)
+    assert abs((a.wartezeit_jahre_35 - a.wartezeit_jahre_45) - 5.0) < 1e-9

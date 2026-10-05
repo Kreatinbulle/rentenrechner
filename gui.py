@@ -71,13 +71,15 @@ def goto(i: int):
     st.session_state["step"] = i
 
 
-def _proj() -> Projekt:
+def _proj(derive: bool = True) -> Projekt:
     st_ = S()
     pd_ = dict(st_["person"])
     pd_["geburtsdatum"] = pd_["geburtsdatum"].isoformat()
     ad_ = dict(st_["ann"])
     ad_["start"] = f"{ad_['start'].year}-{ad_['start'].month:02d}"
     p_, a_ = Person.from_dict(pd_), Annahmen.from_dict(ad_)
+    if derive:
+        p_ = I.leite_ab(p_, a_)
     szs = []
     for i, d in enumerate(st_["szen"]):
         s = Szenario.from_dict(d)
@@ -212,14 +214,15 @@ def page_du():
               help="Die Klasse bestimmt nur den monatlichen Lohnsteuerabzug. Für die endgültige Steuer zählt die gemeinsame Veranlagung.")
     gj = p["geburtsdatum"].year
     rag, bl = C.regelaltersgrenze_monate(gj), C.abschlagsfrei_besonders_langjaehrig_monate(gj)
-    st.markdown("##### Deine Rentenaltersgrenzen")
+    st.markdown("##### Deine Regelaltersgrenze")
     m = st.columns(3)
     m[0].metric("Regelaltersgrenze", E.fmt_alter(rag), help="Ab hier gibt es die Rente ohne Abschlag (mind. 5 Beitragsjahre).")
-    m[1].metric("Früheste Rente (63)", "63 J. 0 M.", f"−{min(C.MAX_ABSCHLAG_MONATE, rag - 756) * 0.3:.1f} % Rente",
+    m[1].metric("Früheste Rente (frühestens 63)", "ab 63 J.", f"bis −{min(C.MAX_ABSCHLAG_MONATE, rag - 756) * 0.3:.1f} % Rente",
                 delta_color="inverse", delta_arrow="down", help="Mit 35 Versicherungsjahren. 0,3 % Abschlag je Monat, max. 14,4 % – dauerhaft.")
-    m[2].metric("Abschlagsfrei mit 45 Jahren", E.fmt_alter(bl), help="Altersrente für besonders langjährig Versicherte.")
+    m[2].metric("Abschlagsfrei vor der Regelaltersgrenze", "ab " + E.fmt_alter(bl), help="Mit 45 Beitragsjahren. Der tatsächliche Termin hängt von deinen Versicherungszeiten ab (nächster Schritt).")
     WHY("<b>Einfluss:</b> Jeder Monat früher als die Regelaltersgrenze kostet <b>0,3 % Rente – ein Leben lang</b>. "
-        "Das Geburtsjahr legt fest, wie viele Monate das maximal sind.")
+        "Ob du so früh gehen darfst, hängt von deinen <b>Versicherungsjahren</b> ab (z. B. spätes Berufsstart nach Studium) – "
+        "die erfassen wir im nächsten Schritt, danach siehst du deinen persönlichen Rentenfahrplan.")
     kids = st.text_input("Geburtsjahre deiner Kinder (kommagetrennt, leer = keine Kinder)",
                          value=", ".join(str(x) for x in p["kinder_geburtsjahre"]), key="w_p_kids",
                          help="Steuert in der Pflegeversicherung den Kinderlosenzuschlag (+0,6 %) und Abschläge ab dem 2. Kind unter 25.")
@@ -241,47 +244,113 @@ def page_du():
 def page_rente():
     p = S()["person"]
     st.header("2 · Deine Rentenansprüche")
-    WHY("Diese Zahlen findest du in deiner <b>Rentenauskunft</b> (Deutsche Rentenversicherung, auch im Online-Konto). "
-        "Aus Entgeltpunkten (EP) × Rentenwert ergibt sich deine Monatsrente: <b>1 EP ≈ "
-        f"{C.RENTENWERT_AB_JULI_2026:.2f} € Rente pro Monat</b> (brutto).")
-    c1, c2 = st.columns(2)
-    with c1:
-        W(st.number_input, "Entgeltpunkte bisher", p, "ep_aktuell", "p", min_value=0.0, step=0.5, format="%.3f",
-          help="Rentenauskunft → 'bisher erworbene Entgeltpunkte'.")
-    with c2:
-        W(st.number_input, "Erwartete Entgeltpunkte je weiterem Arbeitsjahr", p, "ep_pro_jahr", "p", min_value=0.0, step=0.1, format="%.3f")
-        vorschlag = min(p["brutto_jahr"], C.BBG_RV_JAHR) / C.DURCHSCHNITTSENTGELT_JAHR
-        st.caption(f"Faustformel: Jahresbrutto ÷ Durchschnittsentgelt ({C.DURCHSCHNITTSENTGELT_JAHR:,.0f} €) = **{vorschlag:.2f}**")
-        if st.button("Vorschlag übernehmen", key="ep_vorschlag"):
-            p["ep_pro_jahr"] = round(vorschlag, 3)
-            st.session_state["w_p_ep_pro_jahr"] = round(vorschlag, 3)
-            st.rerun()
-    st.markdown("##### Wartezeiten")
-    WHY("Für die vorzeitige Rente brauchst du <b>35 Jahre</b>, für die abschlagsfreie Rente vor der Regelaltersgrenze <b>45 Jahre</b> "
-        "anrechenbare Zeiten (Pflichtbeiträge, Kindererziehung, Pflege, Teile von Arbeitslosigkeit …). Die Rentenauskunft nennt dir die Zahlen.")
-    c1, c2 = st.columns(2)
-    W(c1.number_input, "Jahre für die 35-Jahre-Wartezeit (heute)", p, "wartezeit_jahre_35", "p", min_value=0.0, step=0.5)
-    W(c2.number_input, "Jahre für die 45-Jahre-Wartezeit (heute)", p, "wartezeit_jahre_45", "p", min_value=0.0, step=0.5,
-      help="Zählt strenger: z. B. Arbeitslosigkeit in den letzten 2 Jahren vor Rentenbeginn zählt nicht mit.")
-    heute = date.today()
-    for lbl, need, have, col in (("35 Jahre", 35, p["wartezeit_jahre_35"], c1), ("45 Jahre", 45, p["wartezeit_jahre_45"], c2)):
-        rest = max(0.0, need - have)
-        alter_m = (heute.year - p["geburtsdatum"].year) * 12 + heute.month - p["geburtsdatum"].month + round(rest * 12)
-        col.caption(("✅ bereits erfüllt" if rest == 0 else f"Bei durchgehender Arbeit erreicht ab Alter **{E.fmt_alter(alter_m)}**") + f" ({lbl})")
-    # Hochrechnung
-    st.markdown("##### Grobe Hochrechnung deiner Rente")
+    WHY("Die Zahlen stehen in deiner <b>Renteninformation</b> (jährlich per Post) bzw. <b>Rentenauskunft</b> (ab 55 regelmäßig, sonst auf Antrag) der "
+        "Deutschen Rentenversicherung – auch im DRV-Online-Portal. Ein <i>Rentenbescheid</i> gibt es erst nach dem Rentenantrag; für die Planung "
+        "nimmst du die Auskunft. Nicht alles ist dort direkt als Zahl aufgeführt – für jede Angabe gibt es deshalb eine Eingabe-Alternative.")
+    with st.expander("📄 Wo finde ich was? (Orientierung)"):
+        st.markdown("""
+| Das brauchen wir | Typische Stelle in der Auskunft |
+|---|---|
+| **Entgeltpunkte** oder **Monatsrente „ohne weitere Beiträge“** | Abschnitt zur bisher erreichten Rentenanwartschaft (Regelaltersrente) |
+| **Rente bei Beitragszahlung bis zur Regelaltersgrenze** (Hochrechnung) | direkt daneben: „Hochrechnung“ bei Fortzahlung der Beiträge |
+| **Aktueller Rentenwert** | Hinweise/Erläuterung zur Berechnung |
+| **Versicherungszeiten** (Berufsstart, Studium, Lücken, Kindererziehung) | Anlage „Versicherungsverlauf“ – dort stehen alle Zeiten mit Datum |
+| **Wartezeiten** (35 / 45 Jahre) | Teilweise als Hinweis, ob die Wartezeit erfüllt ist; sonst aus dem Versicherungsverlauf (Hilfe weiter unten) |
+
+Layout und Bezeichnungen können je nach Ausgabe abweichen – im Zweifel nimm die Schätz-Hilfen.""")
+
+    # ---- ① bisher erreicht
+    with st.container(border=True):
+        st.markdown("#### ① Was du bisher erreicht hast")
+        W(st.radio, "Welche Angabe hast du?", p, "ep_modus", "p", ["ep", "rente"], horizontal=True,
+          format_func={"ep": "Ich kenne die Entgeltpunkte", "rente": "Ich kenne die Monatsrente („Regelaltersrente ohne weitere Beiträge“)"}.get)
+        c1, c2 = st.columns(2)
+        if p["ep_modus"] == "ep":
+            W(c1.number_input, "Entgeltpunkte bisher", p, "ep_aktuell", "p", min_value=0.0, step=0.5, format="%.3f")
+        else:
+            W(c1.number_input, "Monatsrente bisher (€, brutto)", p, "anwartschaft_eur", "p", min_value=0.0, step=50.0)
+        W(c2.number_input, "Rentenwert, mit dem die Auskunft rechnet (€)", p, "auskunft_rentenwert", "p", min_value=1.0, step=0.1, format="%.2f",
+          help="Steht in der Auskunft („aktueller Rentenwert“). Älter als Juli 2026? Dann 40,79 € statt 42,52 €. Wird nur zur Umrechnung Euro ↔ Entgeltpunkte genutzt.")
+    # ---- ② wie geht es weiter
+    with st.container(border=True):
+        st.markdown("#### ② Wie viele Entgeltpunkte kommen noch dazu?")
+        W(st.radio, "Wie möchtest du das angeben?", p, "fortgang_modus", "p", ["gehalt", "hochrechnung", "direkt"],
+          format_func={"gehalt": "Aus meinem Gehalt schätzen", "hochrechnung": "Aus der Hochrechnung meiner Auskunft",
+                       "direkt": "Direkt eingeben"}.get)
+        if p["fortgang_modus"] == "gehalt":
+            st.caption(f"Jahresbrutto {eur(p['brutto_jahr'])} ÷ Durchschnittsentgelt {eur(C.DURCHSCHNITTSENTGELT_JAHR)} (max. bis Beitragsbemessungsgrenze).")
+        elif p["fortgang_modus"] == "hochrechnung":
+            st.caption("Die Auskunft nennt die Monatsrente, die du bekämst, wenn du bis zu einem bestimmten Alter weiter Beiträge zahlst wie bisher. "
+                       "Daraus berechnen wir, wie viele Punkte pro Jahr noch dazukommen.")
+            c1, c2 = st.columns(2)
+            W(c1.number_input, "Monatsrente laut Hochrechnung (€, brutto)", p, "hochrechnung_eur", "p", min_value=0.0, step=50.0)
+            ALTER(c2, "… bei Rentenbeginn mit Alter", p, "hochrechnung_alter_m", "p", 60, 70,
+                  help="Meist die Regelaltersgrenze – steht in der Auskunft („bei Rentenbeginn am …“).")
+        else:
+            W(st.number_input, "Entgeltpunkte je weiterem Arbeitsjahr", p, "ep_pro_jahr", "p", min_value=0.0, step=0.1, format="%.3f")
+    # ---- ③ Versicherungszeiten
+    with st.container(border=True):
+        st.markdown("#### ③ Deine Versicherungszeiten (Wartezeiten)")
+        WHY("Für <b>Rente mit 63</b> brauchst du <b>35 Jahre</b>, für <b>abschlagsfrei vor der Regelaltersgrenze 45 Jahre</b>. Wer spät ins Berufsleben "
+            "gestartet ist (z. B. nach Abitur und Studium), erreicht diese Marken später – dein frühester Termin verschiebt sich entsprechend. "
+            "Schul-/Studienzeit ab 17 zählt nur für die 35 Jahre (max. 8 Jahre), <b>nicht</b> für die 45 Jahre.")
+        W(st.radio, "Wie möchtest du das angeben?", p, "wz_modus", "p", ["direkt", "schaetzung"], horizontal=True,
+          format_func={"direkt": "Jahre direkt eingeben (falls in der Auskunft genannt)", "schaetzung": "Aus dem Versicherungsverlauf schätzen"}.get)
+        if p["wz_modus"] == "direkt":
+            c1, c2 = st.columns(2)
+            W(c1.number_input, "Jahre für die 35-Jahre-Wartezeit (heute)", p, "wartezeit_jahre_35", "p", min_value=0.0, step=0.5,
+              help="38 Jahre 6 Monate = 38,5")
+            W(c2.number_input, "Jahre für die 45-Jahre-Wartezeit (heute)", p, "wartezeit_jahre_45", "p", min_value=0.0, step=0.5,
+              help="Zählt strenger: keine Schul-/Studienzeiten, ALG-I in den letzten 2 Jahren vor Rentenbeginn zählt nicht.")
+        else:
+            c1, c2 = st.columns(2)
+            bs = date.fromisoformat(p["berufsstart"])
+            key = "w_p_berufsstart_d"
+            if key not in st.session_state:
+                st.session_state[key] = bs
+            p["berufsstart"] = c1.date_input("Erster Pflichtbeitrag (Berufsstart)", key=key, min_value=date(1960, 1, 1), max_value=date.today(),
+                                              format="DD.MM.YYYY", help="Im Versicherungsverlauf: erste Zeile mit Pflichtbeiträgen, nicht die Schulzeit.").isoformat()
+            W(c2.number_input, "Schule/Studium ab 17 (Monate, max. 96)", p, "schul_monate", "p", min_value=0, max_value=96, step=1,
+              help="Anrechnungszeiten laut Versicherungsverlauf – zählen nur für die 35 Jahre. Liegen sie VOR dem ersten Pflichtbeitrag, hier eintragen.")
+            c1, c2 = st.columns(2)
+            W(c1.number_input, "Lücken seit Berufsstart (Monate)", p, "luecken_monate", "p", min_value=0, step=1,
+              help="Monate ohne Pflichtbeitrag und ohne anrechenbare Zeit (z. B. unbezahlte Auszeit, Ausland, Selbstständigkeit ohne Beiträge).")
+            W(c2.number_input, "Kindererziehung/Pflege ohne Beiträge (Monate)", p, "kind_monate", "p", min_value=0, step=1,
+              help="Zeiten, die zusätzlich zählen (für 35 und 45 Jahre), aber nicht parallel zu Beiträgen liegen.")
+    # ---- Ergebnis der Eingaben
     pr = _proj()
-    gj = pr.person.geburt.year
-    rag, frueh = C.regelaltersgrenze_monate(gj), C.FRUEHESTENS_LANGJAEHRIG_MONATE
+    pd_ = pr.person
+    f = I.fahrplan(pd_, pr.annahmen)
+    st.markdown("#### 🗺 Dein Rentenfahrplan (aus deinen Angaben)")
+    c = st.columns(4)
+    c[0].metric("Entgeltpunkte heute", f"{pd_.ep_aktuell:.2f}", help="= bisherige Anwartschaft")
+    c[1].metric("Weitere EP pro Jahr", f"{pd_.ep_pro_jahr:.2f}")
+    c[2].metric("Wartezeit 35 / 45 Jahre", f"{pd_.wartezeit_jahre_35:.1f} / {pd_.wartezeit_jahre_45:.1f}")
+    c[3].metric("Rentenwert-Basis", f"{pd_.auskunft_rentenwert:.2f} €")
+    t = pd.DataFrame([
+        {"Möglichkeit": "Rente für langjährig Versicherte (35 Jahre) – mit Abschlag", "Frühester Beginn": f"mit {E.fmt_alter(f['langjaehrig'])} (ab {f['datum'](f['langjaehrig'])})",
+         "Abschlag": f"{min(C.MAX_ABSCHLAG_MONATE, f['rag'] - f['langjaehrig']) * 0.3:.1f} %"},
+        {"Möglichkeit": "Rente für besonders langjährig Versicherte (45 Jahre) – ohne Abschlag", "Frühester Beginn": f"mit {E.fmt_alter(f['abschlagsfrei'])} (ab {f['datum'](f['abschlagsfrei'])})",
+         "Abschlag": "0 %"},
+        {"Möglichkeit": "Regelaltersrente", "Frühester Beginn": f"mit {E.fmt_alter(f['rag'])} (ab {f['datum'](f['rag'])})", "Abschlag": "0 %"},
+    ])
+    st.dataframe(t.set_index("Möglichkeit"), width="stretch")
+    if f["abschlagsfrei"] > C.abschlagsfrei_besonders_langjaehrig_monate(pd_.geburt.year):
+        st.info(f"ℹ️ Laut Altersgrenze wäre ein abschlagsfreier Beginn mit {E.fmt_alter(C.abschlagsfrei_besonders_langjaehrig_monate(pd_.geburt.year))} möglich – "
+                f"wegen deiner Versicherungszeiten (45 Jahre erst später erreicht) ist es frühestens mit **{E.fmt_alter(f['abschlagsfrei'])}**.")
+    # Gegenprobe
+    st.markdown("##### Gegenprobe: Rente im Modell")
     m = st.columns(2)
-    for col, alter, txt in ((m[0], rag, "zur Regelaltersgrenze"), (m[1], frueh, "mit 63 (vorzeitig)")):
-        e = rechne(pr.person, pr.annahmen, Szenario(name="x", erwerbsende_alter_m=alter, rentenbeginn_alter_m=alter))
+    for col, alter, txt in ((m[0], f["rag"], "zur Regelaltersgrenze"), (m[1], f["langjaehrig"], "frühestmöglich")):
+        e = rechne(pd_, pr.annahmen, Szenario(name="x", erwerbsende_alter_m=alter, rentenbeginn_alter_m=alter))
         if e.ok:
             col.metric(f"Bruttorente {txt}", eur(e.kennzahlen["rente_brutto_start"]) + "/Monat",
                        f"Netto ca. {eur(e.kennzahlen['rente_netto_start'])}", delta_color="off",
                        help="Nominal, im Jahr des Rentenbeginns (inkl. künftiger Rentenanpassungen).")
         else:
             col.warning(f"{txt}: nicht möglich – " + " ".join(e.fehler))
+    st.caption("Vergleiche das mit der Hochrechnung in deiner Auskunft: Sie rechnet ohne künftige Rentenanpassung (heutiger Rentenwert), "
+               "unser Modell mit der Rentenanpassung aus Schritt 6 – deshalb liegt unser Wert in der Zukunft höher.")
 
 
 def page_vers():
@@ -402,7 +471,7 @@ def page_szen():
         "Wir empfehlen <b>3–5 Szenarien</b> – das erste dient später als Referenz für den Break-even.")
     pr = _proj()
     gj = pr.person.geburt.year
-    vl = I.vorlagen(gj)
+    vl = I.vorlagen(pr.person, pr.annahmen)
     c1, c2 = st.columns([3, 1])
     wahl = c1.selectbox("Vorlage hinzufügen", list(vl.keys()), key="w_vorlage")
     if c2.button("➕ Hinzufügen", width="stretch", key="addv"):
@@ -869,7 +938,7 @@ def main():
         st.session_state["step"] = 0
     with st.sidebar:
         st.header("Projekt")
-        st.download_button("💾 Speichern (JSON)", _proj().to_json(), file_name="rentenprojekt.json", mime="application/json")
+        st.download_button("💾 Speichern (JSON)", _proj(derive=False).to_json(), file_name="rentenprojekt.json", mime="application/json")
         up = st.file_uploader("📂 Laden", type="json")
         if up is not None and st.session_state.get("_geladen") != up.file_id:
             st.session_state["_geladen"] = up.file_id
