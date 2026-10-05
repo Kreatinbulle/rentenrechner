@@ -152,3 +152,13 @@ def test_kvdr_vs_freiwillig():
     a = _run(erwerbsende_alter_m=67 * 12, rentenbeginn_alter_m=67 * 12, person={"gkv_anteil_zweite_haelfte": 95, "sonstige_einkuenfte_jahr": 24_000})
     b = _run(erwerbsende_alter_m=67 * 12, rentenbeginn_alter_m=67 * 12, person={"gkv_anteil_zweite_haelfte": 50, "sonstige_einkuenfte_jahr": 24_000})
     assert b.kennzahlen["rente_netto_start"] < a.kennzahlen["rente_netto_start"]
+
+
+def test_insights_fazit_und_einfluss():
+    import insights as I
+    pr = standard_projekt(); pr.annahmen.start = "2026-10"
+    ergs = [E.simuliere(pr.person, pr.annahmen, s) for s in pr.szenarien]
+    assert I.fazit(ergs, 1, False, 85)
+    df = I.einfluss(pr.person, pr.annahmen, pr.szenarien, 2, 0, 1, False, 85)
+    assert len(df) >= 6 and "basis_wert" in df.attrs
+    assert len(I.vorlagen(1967)) == 6
